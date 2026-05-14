@@ -6,6 +6,10 @@ const meterBar = document.getElementById("meter-bar");
 const meterThreshold = document.getElementById("meter-threshold");
 const analyzeBtn = document.getElementById("analyze-btn");
 const clearBtn = document.getElementById("clear-btn");
+const endBtn = document.getElementById("end-btn");
+const transcriptEl = document.getElementById("transcript");
+const quizSection = document.getElementById("quiz-section");
+const quizContent = document.getElementById("quiz-content");
 
 const panels = {
   board_content: document.getElementById("board-content"),
@@ -15,6 +19,9 @@ const panels = {
 
 // Meter bar is scaled so the threshold marker sits at 50% of the track.
 const METER_FULL_SCALE_MULTIPLIER = 2;
+
+let transcriptStarted = false;
+let sessionEnded = false;
 
 function setStatus(text, isError) {
   statusEl.textContent = text;
@@ -40,6 +47,23 @@ function updateMeter(diff, threshold, armed) {
   meterThreshold.style.left = `${100 / METER_FULL_SCALE_MULTIPLIER}%`;
 }
 
+function addTranscript(time, text) {
+  if (!transcriptStarted) {
+    transcriptEl.innerHTML = "";
+    transcriptStarted = true;
+  }
+  const line = document.createElement("p");
+  line.className = "transcript-line";
+  const ts = document.createElement("span");
+  ts.className = "ts";
+  ts.textContent = time;
+  line.appendChild(ts);
+  line.appendChild(document.createTextNode(" " + text));
+  transcriptEl.appendChild(line);
+  // Newest at the bottom — keep it scrolled into view.
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
 function handleEvent(event) {
   switch (event.type) {
     case "meter":
@@ -56,6 +80,9 @@ function handleEvent(event) {
       setPanel(panels.explanation, event.data.explanation);
       setPanel(panels.watch_out_for, event.data.watch_out_for);
       break;
+    case "transcript":
+      addTranscript(event.time, event.text);
+      break;
   }
 }
 
@@ -69,6 +96,10 @@ function connect() {
     }
   };
   source.onerror = () => {
+    if (sessionEnded) {
+      source.close();
+      return;
+    }
     setStatus("Reconnecting…", true);
     // EventSource auto-reconnects; no manual retry needed.
   };
@@ -93,6 +124,38 @@ clearBtn.addEventListener("click", () => {
   setPanel(panels.explanation, "");
   setPanel(panels.watch_out_for, "");
   setStatus("Cleared.", false);
+});
+
+endBtn.addEventListener("click", async () => {
+  if (!confirm("End the session? This stops the camera and microphone and generates a practice quiz.")) {
+    return;
+  }
+  analyzeBtn.disabled = true;
+  endBtn.disabled = true;
+  endBtn.textContent = "Generating quiz…";
+  setStatus("Generating quiz…", false);
+  try {
+    const res = await fetch("/end_session", { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      sessionEnded = true;
+      quizContent.textContent = data.quiz;
+      quizSection.hidden = false;
+      quizSection.scrollIntoView({ behavior: "smooth" });
+      endBtn.textContent = "Session Ended";
+      setStatus("Session ended.", false);
+    } else {
+      setStatus(`Error: ${data.error}`, true);
+      endBtn.disabled = false;
+      endBtn.textContent = "End Session";
+      analyzeBtn.disabled = false;
+    }
+  } catch (err) {
+    setStatus("Could not reach server", true);
+    endBtn.disabled = false;
+    endBtn.textContent = "End Session";
+    analyzeBtn.disabled = false;
+  }
 });
 
 connect();

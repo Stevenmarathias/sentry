@@ -34,6 +34,22 @@ header {
   gap: 12px;
 }
 
+.title-block {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.class-tag {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  background: rgba(91, 141, 239, 0.12);
+  border: 1px solid rgba(91, 141, 239, 0.35);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
 h1 {
   font-size: 20px;
   font-weight: 600;
@@ -115,6 +131,11 @@ button.primary {
   color: #fff;
 }
 button.primary:hover { background: #4f7fe0; }
+button.danger {
+  color: var(--error);
+  border-color: rgba(224, 88, 76, 0.4);
+}
+button.danger:hover { background: rgba(224, 88, 76, 0.12); }
 button:disabled { opacity: 0.5; cursor: default; }
 
 .panels {
@@ -143,4 +164,74 @@ button:disabled { opacity: 0.5; cursor: default; }
 .panel p.empty {
   color: var(--muted);
   font-style: italic;
+}
+
+/* ---- Transcript panel ---- */
+
+.transcript {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.transcript-line {
+  font-size: 14px;
+}
+.transcript-line .ts {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+/* ---- Quiz section ---- */
+
+.quiz-content {
+  font-size: 15px;
+  white-space: pre-wrap;
+}
+
+/* ---- Landing page ---- */
+
+.landing {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.landing-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 28px 24px;
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.landing-card h1 {
+  font-size: 24px;
+  text-align: center;
+}
+.landing-card .subtitle {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: -8px;
+}
+.landing-card select,
+.landing-card input[type="text"] {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+}
+.landing-card button {
+  margin-top: 4px;
 }

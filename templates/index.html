@@ -3,13 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sentry</title>
+  <title>Sentry — {{ class_name }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <main class="app">
     <header>
-      <h1>Sentry</h1>
+      <div class="title-block">
+        <h1>Sentry</h1>
+        <span class="class-tag">{{ class_name }}</span>
+      </div>
       <span id="status" class="status">Connecting…</span>
     </header>
 
@@ -31,6 +34,7 @@
     <section class="controls">
       <button id="analyze-btn" class="primary">Analyze Now</button>
       <button id="clear-btn">Clear</button>
+      <button id="end-btn" class="danger">End Session</button>
     </section>
 
     <section class="panels">
@@ -46,6 +50,18 @@
         <h2>Watch out for</h2>
         <p id="watch-out-for" class="empty">—</p>
       </article>
+    </section>
+
+    <section class="panel transcript-panel">
+      <h2>Transcript</h2>
+      <div id="transcript" class="transcript">
+        <p class="empty">Listening… transcripts appear here every ~20 seconds.</p>
+      </div>
+    </section>
+
+    <section id="quiz-section" class="panel quiz-section" hidden>
+      <h2>Practice Quiz</h2>
+      <div id="quiz-content" class="quiz-content"></div>
     </section>
   </main>
 

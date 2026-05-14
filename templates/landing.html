@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentry — Start a Session</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="landing">
+    <form class="landing-card" method="POST" action="{{ url_for('start') }}">
+      <h1>Sentry</h1>
+      <p class="subtitle">Which class is this for?</p>
+
+      <select id="class-select" name="class_select">
+        {% for c in classes %}
+          <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+        <option value="__new__">New class…</option>
+      </select>
+
+      <input
+        type="text"
+        id="new-class"
+        name="new_class"
+        placeholder="New class name"
+        autocomplete="off">
+
+      <button type="submit" class="primary">Start Session</button>
+    </form>
+  </main>
+
+  <script>
+    // Reveal the text input only when "New class…" is selected. With no
+    // existing classes, that's the only option, so show it on load too.
+    const select = document.getElementById("class-select");
+    const newClass = document.getElementById("new-class");
+    function sync() {
+      const isNew = select.value === "__new__";
+      newClass.style.display = isNew ? "block" : "none";
+      if (isNew) newClass.focus();
+    }
+    select.addEventListener("change", sync);
+    sync();
+  </script>
+</body>
+</html>
