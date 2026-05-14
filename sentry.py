@@ -270,6 +270,9 @@ class SentryApp:
         self._last_analysis_time = 0.0
         self._analyzing = False
         self._stop_evt = threading.Event()
+        self._settle_evt = threading.Event()
+        self._last_preview = 0.0
+        self._last_meter = 0.0
         self._result_queue: "queue.Queue[dict]" = queue.Queue()
 
         self._build_ui()
@@ -277,7 +280,7 @@ class SentryApp:
         self._cap_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._cap_thread.start()
 
-        self.root.after(150, self._poll_results)
+        self.root.after(33, self._tick)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---- UI construction ----------------------------------------------------
@@ -324,8 +327,7 @@ class SentryApp:
     # ---- Capture / change detection loop -----------------------------------
 
     def _capture_loop(self) -> None:
-        last_preview = 0.0
-        last_meter = 0.0
+        """Camera read + change detection only. Never touches Tk."""
         while not self._stop_evt.is_set():
             ok, frame = self.cap.read()
             if not ok:
@@ -335,23 +337,43 @@ class SentryApp:
             with self._frame_lock:
                 self._latest_frame = frame
 
-            now = time.time()
-            if now - last_preview > 0.1:  # ~10 fps preview to the UI
-                last_preview = now
-                self.root.after(0, self._update_preview, frame.copy())
-
-            settled = self.detector.update(frame)
-
-            if now - last_meter > 0.25:
-                last_meter = now
-                self.root.after(0, self._update_meter, self.detector.last_diff)
-
-            if (settled
-                    and not self._analyzing
-                    and now - self._last_analysis_time > COOLDOWN_SECONDS):
-                self.root.after(0, self._launch_analysis, frame.copy())
+            if self.detector.update(frame):
+                self._settle_evt.set()
 
             time.sleep(0.03)
+
+    def _tick(self) -> None:
+        """Main-thread UI pump: preview, meter, auto-trigger, results.
+
+        All Tk access happens here. The capture thread only writes shared
+        state — cross-thread Tk calls hang or fail to render on macOS.
+        """
+        with self._frame_lock:
+            frame = None if self._latest_frame is None else self._latest_frame.copy()
+
+        now = time.time()
+        if frame is not None:
+            if now - self._last_preview > 0.1:
+                self._last_preview = now
+                self._update_preview(frame)
+            if now - self._last_meter > 0.25:
+                self._last_meter = now
+                self._update_meter(self.detector.last_diff)
+
+        if self._settle_evt.is_set():
+            self._settle_evt.clear()
+            if (frame is not None
+                    and not self._analyzing
+                    and now - self._last_analysis_time > COOLDOWN_SECONDS):
+                self._launch_analysis(frame)
+
+        try:
+            while True:
+                self._handle_result(self._result_queue.get_nowait())
+        except queue.Empty:
+            pass
+
+        self.root.after(33, self._tick)
 
     def _update_meter(self, diff: float) -> None:
         armed = "armed" if self.detector._was_changing else "idle"
@@ -387,39 +409,30 @@ class SentryApp:
         self._last_analysis_time = time.time()
         self._set_status("Analyzing…")
 
-        transcript: Optional[str] = None
+        # Stop the stream on the main thread (quick, touches the button),
+        # but hand transcription to the worker so the UI stays responsive.
+        audio_data: Optional[np.ndarray] = None
         if self.audio.recording:
             audio_data = self.audio.stop()
             self.audio_btn.configure(text="+ Audio")
-            if audio_data is not None and audio_data.size > 0:
-                self._set_status("Transcribing audio…")
-                try:
-                    transcript = self.transcriber.transcribe(
-                        audio_data, AUDIO_SAMPLE_RATE)
-                except Exception as exc:
-                    print(f"[whisper] {exc}")
-                    transcript = None
 
         threading.Thread(
             target=self._run_analysis,
-            args=(frame, transcript),
+            args=(frame, audio_data),
             daemon=True,
         ).start()
 
-    def _run_analysis(self, frame: np.ndarray, transcript: Optional[str]) -> None:
+    def _run_analysis(self, frame: np.ndarray,
+                      audio_data: Optional[np.ndarray]) -> None:
         try:
+            transcript: Optional[str] = None
+            if audio_data is not None and audio_data.size > 0:
+                transcript = self.transcriber.transcribe(
+                    audio_data, AUDIO_SAMPLE_RATE)
             result = self.analyzer.analyze(frame, transcript)
             self._result_queue.put({"ok": True, "data": result})
         except Exception as exc:
             self._result_queue.put({"ok": False, "error": str(exc)})
-
-    def _poll_results(self) -> None:
-        try:
-            while True:
-                self._handle_result(self._result_queue.get_nowait())
-        except queue.Empty:
-            pass
-        self.root.after(150, self._poll_results)
 
     def _handle_result(self, msg: dict) -> None:
         self._analyzing = False
