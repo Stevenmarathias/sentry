@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentry</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>Sentry</h1>
+      <span id="status" class="status">Connecting…</span>
+    </header>
+
+    <section class="preview">
+      <img id="video" src="{{ url_for('video_feed') }}" alt="Live camera preview">
+    </section>
+
+    <section class="meter">
+      <div class="meter-labels">
+        <span>motion</span>
+        <span id="meter-text">—</span>
+      </div>
+      <div class="meter-track">
+        <div id="meter-bar" class="meter-bar"></div>
+        <div id="meter-threshold" class="meter-threshold"></div>
+      </div>
+    </section>
+
+    <section class="controls">
+      <button id="analyze-btn" class="primary">Analyze Now</button>
+      <button id="clear-btn">Clear</button>
+    </section>
+
+    <section class="panels">
+      <article class="panel">
+        <h2>On the board</h2>
+        <p id="board-content" class="empty">Waiting for the board to settle…</p>
+      </article>
+      <article class="panel">
+        <h2>Simple explanation</h2>
+        <p id="explanation" class="empty">—</p>
+      </article>
+      <article class="panel">
+        <h2>Watch out for</h2>
+        <p id="watch-out-for" class="empty">—</p>
+      </article>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
