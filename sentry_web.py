@@ -10,6 +10,8 @@ Server-Sent Events.
 Phase 1: class-agnostic live feedback.
 Phase 2: class selection at startup, continuous Whisper transcription, a
 per-class session markdown file, and an interactive end-of-session quiz.
+Phase 3: per-class cross-lecture concept memory with importance scoring;
+end-of-session quizzes mix today's content with recurring concepts.
 
 The camera / detection / analysis / transcription logic is reused from
 sentry.py (v1.0) — only the Tkinter UI is replaced. Run this instead of
@@ -65,28 +67,41 @@ METER_INTERVAL = 0.25        # seconds between motion-meter broadcasts
 SSE_KEEPALIVE = 15.0         # seconds idle before an SSE keepalive comment
 AUDIO_CHUNK_SECONDS = 20.0   # length of each audio chunk handed to Whisper
 
+RECENT_SESSIONS = 3          # window for the recency term of importance_score
+MAX_RECURRING_CONCEPTS = 5   # high-importance past concepts offered to the quiz
+
 SESSIONS_DIR = Path(__file__).resolve().parent / "sessions"
 
 QUIZ_SYSTEM_PROMPT = (
-    "You are Sentry, a study assistant. You are given the merged timeline of a "
-    "single lecture session: board analyses and audio transcripts, in order, "
-    "each tagged with an HH:MM:SS timestamp. Generate a practice quiz that "
-    "helps the student review THIS lecture, following these rules strictly.\n\n"
-    "COVERAGE: You MUST include at least one question about every named "
-    "concept, term, person, event, formula, framework, claim, or technique "
-    "that explicitly appears in the transcript. Do not omit any. If five named "
-    "items are mentioned, all five must appear in the quiz.\n\n"
-    "GROUNDING: Base every question on content that actually appears in the "
-    "transcript. Do not extrapolate to related topics from background "
-    "knowledge unless the transcript explicitly introduces them. If the "
-    "transcript is thin on a topic, write a thinner question — do not pad with "
-    "outside material.\n\n"
-    "TRANSPARENCY: Every question must include a source_timestamp: the "
-    "HH:MM:SS timestamp from the transcript where the concept was discussed. "
-    "If a concept appears multiple times, cite the first occurrence.\n\n"
-    "SIZING: The number of questions should reflect transcript coverage. A "
-    "30-minute lecture with 6 named concepts should yield roughly 6-10 "
-    "questions. Do not pad to hit a target number.\n\n"
+    "You are Sentry, a study assistant. You are given TODAY'S lecture session "
+    "log — board analyses and audio transcripts, each tagged with an HH:MM:SS "
+    "timestamp — and sometimes a short list of recurring high-importance "
+    "concepts from earlier lectures in this class. Generate a practice quiz, "
+    "following these rules strictly.\n\n"
+    "COVERAGE: For today's lecture, you MUST include at least one question "
+    "about every named concept, term, person, event, formula, framework, "
+    "claim, or technique that explicitly appears in today's transcript. Do not "
+    "omit any. If five named items are mentioned, all five must appear.\n\n"
+    "GROUNDING: Base every question about today's lecture on content that "
+    "actually appears in today's transcript. Do not extrapolate to related "
+    "topics from background knowledge unless the transcript explicitly "
+    "introduces them. If the transcript is thin on a topic, write a thinner "
+    "question — do not pad with outside material.\n\n"
+    "TRANSPARENCY: Every question must include a source_timestamp. For a "
+    "question about today's lecture, use the HH:MM:SS timestamp from today's "
+    "transcript where the concept was discussed; if it recurs, cite the first "
+    "occurrence.\n\n"
+    "SIZING: The number of today's-lecture questions should reflect transcript "
+    "coverage — a 30-minute lecture with 6 named concepts should yield roughly "
+    "6-10 questions. Do not pad to hit a target number.\n\n"
+    "RECURRING CONCEPTS: If a list of recurring high-importance concepts from "
+    "earlier lectures is provided below the transcript, keep the quiz mostly "
+    "today's transcript (about 80% of the questions), then add 1-2 questions "
+    "that test those recurring concepts. For each recurring-concept question, "
+    "set \"recurring\": true and set its source_timestamp to the exact "
+    "\"PAST: ...\" string supplied for that concept. If no recurring concepts "
+    "are provided, generate the quiz entirely from today's transcript and do "
+    "not mark any question as recurring.\n\n"
     "FORMAT: Return a JSON object with a \"questions\" array. Use a mix of the "
     "three question types:\n"
     "- \"mcq\": provide \"question\", \"choices\" (exactly four answer strings, "
@@ -98,13 +113,15 @@ QUIZ_SYSTEM_PROMPT = (
     "\"source_timestamp\".\n"
     "- \"short_answer\": provide \"question\", \"reference_answer\", and "
     "\"source_timestamp\".\n"
-    "Mix multiple-choice, fill-in-the-blank, and short-answer questions across "
-    "the quiz."
+    "Set \"recurring\": true only on questions that test a recurring concept "
+    "from an earlier lecture; today's-lecture questions omit it. Mix "
+    "multiple-choice, fill-in-the-blank, and short-answer types across the "
+    "quiz."
 )
 
 # Structured-output schema for the quiz. Type-specific fields are optional so
 # one item shape can carry all three question types; the prompt enforces which
-# fields each type must supply.
+# fields each type must supply. `recurring` flags a past-lecture question.
 QUIZ_SCHEMA = {
     "type": "object",
     "properties": {
@@ -128,6 +145,7 @@ QUIZ_SCHEMA = {
                     "reference_answer": {"type": "string"},
                     "explanation": {"type": "string"},
                     "source_timestamp": {"type": "string"},
+                    "recurring": {"type": "boolean"},
                 },
                 "required": ["type", "question", "source_timestamp"],
                 "additionalProperties": False,
@@ -159,6 +177,60 @@ GRADE_SCHEMA = {
         "feedback": {"type": "string"},
     },
     "required": ["verdict", "feedback"],
+    "additionalProperties": False,
+}
+
+CONCEPT_EXTRACTION_SYSTEM_PROMPT = (
+    "You are Sentry's concept extractor. You are given the log of a single "
+    "lecture session — board analyses and audio transcripts, each tagged with "
+    "an HH:MM:SS timestamp. Identify every named concept that was actually "
+    "discussed in this lecture and return them as structured JSON.\n\n"
+    "A named concept is a specific term, person, event, formula, framework, "
+    "claim, or technique that the lecture introduces or discusses by name. "
+    "Include only concepts grounded in the transcript — do not add related "
+    "ideas from background knowledge. Skip filler, chit-chat, and anything "
+    "that is not lecture material.\n\n"
+    "For each concept provide:\n"
+    "- name: a short canonical name (e.g. 'heteroskedasticity'), in the form a "
+    "student would look up; lowercase unless it is a proper noun.\n"
+    "- category: one of term, person, event, formula, framework, claim, "
+    "technique, other.\n"
+    "- first_mention_timestamp: the HH:MM:SS timestamp where the concept is "
+    "first mentioned in the transcript.\n"
+    "- brief_definition: one sentence describing how the concept was used in "
+    "THIS lecture.\n\n"
+    "If the transcript contains no real lecture concepts (for example it is "
+    "empty or junk), return an empty concepts array."
+)
+
+CONCEPT_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "concepts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "term", "person", "event", "formula",
+                            "framework", "claim", "technique", "other",
+                        ],
+                    },
+                    "first_mention_timestamp": {"type": "string"},
+                    "brief_definition": {"type": "string"},
+                },
+                "required": [
+                    "name", "category",
+                    "first_mention_timestamp", "brief_definition",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["concepts"],
     "additionalProperties": False,
 }
 
@@ -536,20 +608,218 @@ class AudioWorker:
             bus.broadcast({"type": "error", "text": f"Transcription: {exc}"})
 
 
+# ---- Cross-lecture concept memory --------------------------------------------
+#
+# Each class accumulates a concept store at sessions/<class>/concepts.json.
+# At End Session a concept-extraction call lists today's named concepts; they
+# are merged into the store, importance scores are recomputed, and the highest-
+# importance concepts that did NOT come up today are offered to the quiz.
+
+def normalize_concept(name: str) -> str:
+    """Light normalization for matching concept names across sessions."""
+    return re.sub(r"\s+", " ", (name or "").strip().lower())
+
+
+def extract_concepts(session_markdown: str) -> list[dict]:
+    """Extract named concepts from a session log via a separate Claude call.
+
+    Independent of quiz generation. Returns [] on any failure or empty result
+    so a junk transcript never blocks the quiz.
+    """
+    try:
+        client = camera_worker.analyzer.client
+        message = client.messages.create(
+            model=MODEL_ID,
+            max_tokens=6000,
+            thinking={"type": "adaptive"},
+            system=CONCEPT_EXTRACTION_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": f"Lecture session log:\n\n{session_markdown}",
+            }],
+            output_config={
+                "format": {
+                    "type": "json_schema",
+                    "schema": CONCEPT_EXTRACTION_SCHEMA,
+                }
+            },
+        )
+        text = next(b.text for b in message.content if b.type == "text")
+        concepts = json.loads(text).get("concepts", [])
+        return concepts if isinstance(concepts, list) else []
+    except Exception as exc:
+        print(f"Warning: concept extraction failed ({exc}); "
+              f"continuing with today's transcript only.")
+        return []
+
+
+def load_concepts(class_dir: Path) -> Optional[dict]:
+    """Load a class's concept store. Returns None if it is missing or corrupt
+    (the caller then treats this as a first session and overwrites the file)."""
+    path = class_dir / "concepts.json"
+    if not path.exists():
+        return None
+    try:
+        store = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(store, dict) or not isinstance(
+                store.get("concepts"), list):
+            raise ValueError("unexpected structure")
+        return store
+    except Exception as exc:
+        print(f"Warning: {path} is empty or corrupt ({exc}); "
+              f"treating as a first session and overwriting it.")
+        return None
+
+
+def save_concepts(class_dir: Path, store: dict) -> None:
+    """Write the per-class concept store back to concepts.json."""
+    path = class_dir / "concepts.json"
+    path.write_text(
+        json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def recompute_importance(concepts: list[dict]) -> None:
+    """Recompute importance_score for every concept, in place.
+
+    importance_score = occurrences + 0.3 * (occurrences in the last 3 sessions).
+    Session files are named <YYYY-MM-DD_HHMM>.md, so sorting them lexically
+    sorts them chronologically.
+    """
+    all_sessions = sorted({
+        occ.get("session_file", "")
+        for c in concepts
+        for occ in c.get("occurrences", [])
+    })
+    recent = set(all_sessions[-RECENT_SESSIONS:])
+    for c in concepts:
+        occurrences = c.get("occurrences", [])
+        recent_count = sum(
+            1 for o in occurrences if o.get("session_file", "") in recent
+        )
+        c["importance_score"] = round(
+            len(occurrences) + 0.3 * recent_count, 2
+        )
+
+
+def merge_concepts(store: Optional[dict], extracted: list[dict],
+                   session_file: str, class_name: str) -> dict:
+    """Merge a session's extracted concepts into the per-class store.
+
+    A concept already present (matched on a normalized name) gains a new
+    occurrence; a new concept is appended. Importance scores are then
+    recomputed across the whole store so they stay current.
+    """
+    if store is None or not isinstance(store.get("concepts"), list):
+        store = {"class_name": class_name, "concepts": []}
+
+    by_norm = {
+        normalize_concept(c.get("name", "")): c for c in store["concepts"]
+    }
+    for ex in extracted:
+        norm = normalize_concept(ex.get("name", ""))
+        if not norm:
+            continue
+        occurrence = {
+            "session_file": session_file,
+            "timestamp": ex.get("first_mention_timestamp", ""),
+            "definition": ex.get("brief_definition", ""),
+        }
+        existing = by_norm.get(norm)
+        if existing is not None:
+            existing["occurrences"].append(occurrence)
+            existing["category"] = ex.get(
+                "category", existing.get("category", "other")
+            )
+        else:
+            concept = {
+                "name": ex.get("name", ""),
+                "category": ex.get("category", "other"),
+                "occurrences": [occurrence],
+                "importance_score": 0.0,
+            }
+            store["concepts"].append(concept)
+            by_norm[norm] = concept
+
+    recompute_importance(store["concepts"])
+    store["class_name"] = class_name
+    store["last_updated"] = datetime.now().isoformat(timespec="seconds")
+    return store
+
+
+def pick_recurring_concepts(store: Optional[dict],
+                            extracted: list[dict]) -> list[dict]:
+    """Highest-importance stored concepts that did NOT appear in today's
+    session — the recurring concepts the quiz should also test."""
+    if not store or not store.get("concepts"):
+        return []
+    today = {normalize_concept(c.get("name", "")) for c in extracted}
+    candidates = [
+        c for c in store["concepts"]
+        if normalize_concept(c.get("name", "")) not in today
+    ]
+    candidates.sort(
+        key=lambda c: c.get("importance_score", 0.0), reverse=True
+    )
+    return candidates[:MAX_RECURRING_CONCEPTS]
+
+
+def _earliest_occurrence(concept: dict) -> dict:
+    """The concept's first recorded occurrence (sessions sort chronologically)."""
+    occurrences = concept.get("occurrences", [])
+    if not occurrences:
+        return {}
+    return min(occurrences, key=lambda o: o.get("session_file", ""))
+
+
+def format_recurring_block(recurring: list[dict]) -> str:
+    """Render recurring concepts for the quiz prompt, each with a PAST tag."""
+    lines = []
+    for c in recurring:
+        occ = _earliest_occurrence(c)
+        session_file = occ.get("session_file", "")
+        date = session_file[:10] if len(session_file) >= 10 else session_file
+        past = f"PAST: {date} — {occ.get('timestamp', '')}"
+        lines.append(
+            f"- \"{c.get('name', '')}\" ({c.get('category', 'other')}): "
+            f"{occ.get('definition', '')} "
+            f"[for a question on this concept, set source_timestamp exactly "
+            f"to \"{past}\"]"
+        )
+    return "\n".join(lines)
+
+
 # ---- Quiz generation + grading -----------------------------------------------
 
-def generate_quiz(session_markdown: str) -> dict:
-    """Send the merged session log to Claude; return a structured quiz dict."""
+def generate_quiz(session_markdown: str,
+                  recurring_concepts: list[dict]) -> dict:
+    """Send today's session log (plus optional recurring concepts) to Claude.
+
+    Returns a structured quiz dict. When recurring_concepts is non-empty the
+    quiz mixes today's content with 1-2 questions on those past-lecture
+    concepts; otherwise it is generated entirely from today's transcript.
+    """
+    user_text = f"TODAY'S LECTURE SESSION LOG:\n\n{session_markdown}"
+    if recurring_concepts:
+        user_text += (
+            "\n\n---\n\nRECURRING HIGH-IMPORTANCE CONCEPTS FROM EARLIER "
+            "LECTURES IN THIS CLASS (these did NOT come up today — add 1-2 "
+            "quiz questions covering them, each marked \"recurring\": true):"
+            "\n\n" + format_recurring_block(recurring_concepts)
+        )
+    else:
+        user_text += (
+            "\n\n---\n\n(No recurring concepts from earlier lectures — "
+            "generate the quiz entirely from today's transcript.)"
+        )
+
     client = camera_worker.analyzer.client
     message = client.messages.create(
         model=MODEL_ID,
         max_tokens=12000,
         thinking={"type": "adaptive"},
         system=QUIZ_SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": f"Here is the lecture session log:\n\n{session_markdown}",
-        }],
+        messages=[{"role": "user", "content": user_text}],
         output_config={"format": {"type": "json_schema", "schema": QUIZ_SCHEMA}},
     )
     text = next(b.text for b in message.content if b.type == "text")
@@ -722,10 +992,10 @@ def analyze():
 
 @app.route("/end_session", methods=["POST"])
 def end_session():
-    """Stop the workers, build a practice quiz from the session log, save it.
+    """Stop the workers, extract concepts, build a quiz, update class memory.
 
-    The generated quiz is cached on the session, so a page refresh or a repeat
-    request returns the same quiz instead of regenerating (and recharging) it.
+    The quiz is cached on the session so a refresh or repeat request returns
+    the same quiz without regenerating it (and without merging concepts twice).
     """
     if state.session is None:
         return jsonify({"ok": False, "error": "No active session."}), 400
@@ -739,7 +1009,30 @@ def end_session():
     bus.broadcast({"type": "status", "text": "Generating quiz…"})
 
     try:
-        quiz = generate_quiz(sess.read())
+        markdown = sess.read()
+        class_dir = sess.file_path.parent
+
+        # Concept extraction — a separate call, independent of the quiz.
+        extracted = extract_concepts(markdown)
+
+        # Recurring concepts are chosen from the store as it stands BEFORE
+        # today's merge, and only when today's concepts were extractable.
+        if extracted:
+            store = load_concepts(class_dir)
+            recurring = pick_recurring_concepts(store, extracted)
+        else:
+            store = None
+            recurring = []
+
+        quiz = generate_quiz(markdown, recurring)
+
+        # Merge today's concepts into the per-class store and rescore.
+        if extracted:
+            store = merge_concepts(
+                store, extracted, sess.file_path.name, sess.class_name
+            )
+            save_concepts(class_dir, store)
+
         sess.quiz = quiz
         sess.ended = True
         sess.append_quiz(render_quiz_markdown(quiz))

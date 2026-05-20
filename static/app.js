@@ -229,12 +229,19 @@ function makeCard(q, index, typeLabel) {
   const num = document.createElement("div");
   num.className = "q-number";
   num.textContent = `Question ${index + 1} · ${typeLabel}`;
+  card.appendChild(num);
+
+  // Questions on concepts carried over from earlier lectures get flagged.
+  if (q.recurring) {
+    const badge = document.createElement("div");
+    badge.className = "recurring-badge";
+    badge.textContent = "FROM PRIOR LECTURE — likely on exam.";
+    card.appendChild(badge);
+  }
 
   const text = document.createElement("p");
   text.className = "q-text";
   text.textContent = q.question || "";
-
-  card.appendChild(num);
   card.appendChild(text);
   return card;
 }
