@@ -9,7 +9,7 @@ Server-Sent Events.
 
 Phase 1: class-agnostic live feedback.
 Phase 2: class selection at startup, continuous Whisper transcription, a
-per-class session markdown file, and end-of-session quiz generation.
+per-class session markdown file, and an interactive end-of-session quiz.
 
 The camera / detection / analysis / transcription logic is reused from
 sentry.py (v1.0) — only the Tkinter UI is replaced. Run this instead of
@@ -69,14 +69,98 @@ SESSIONS_DIR = Path(__file__).resolve().parent / "sessions"
 
 QUIZ_SYSTEM_PROMPT = (
     "You are Sentry, a study assistant. You are given the merged timeline of a "
-    "single lecture session: board analyses and audio transcripts, in order. "
-    "Write a practice quiz that helps the student review this lecture. Produce "
-    "5-10 questions mixing multiple-choice and short-answer. Focus on the most "
-    "important and most repeated concepts. After all the questions, include a "
-    "clearly separated '## Answer Key' section. Format the whole response as "
-    "clean Markdown. Do not invent material that is not supported by the "
-    "session log."
+    "single lecture session: board analyses and audio transcripts, in order, "
+    "each tagged with an HH:MM:SS timestamp. Generate a practice quiz that "
+    "helps the student review THIS lecture, following these rules strictly.\n\n"
+    "COVERAGE: You MUST include at least one question about every named "
+    "concept, term, person, event, formula, framework, claim, or technique "
+    "that explicitly appears in the transcript. Do not omit any. If five named "
+    "items are mentioned, all five must appear in the quiz.\n\n"
+    "GROUNDING: Base every question on content that actually appears in the "
+    "transcript. Do not extrapolate to related topics from background "
+    "knowledge unless the transcript explicitly introduces them. If the "
+    "transcript is thin on a topic, write a thinner question — do not pad with "
+    "outside material.\n\n"
+    "TRANSPARENCY: Every question must include a source_timestamp: the "
+    "HH:MM:SS timestamp from the transcript where the concept was discussed. "
+    "If a concept appears multiple times, cite the first occurrence.\n\n"
+    "SIZING: The number of questions should reflect transcript coverage. A "
+    "30-minute lecture with 6 named concepts should yield roughly 6-10 "
+    "questions. Do not pad to hit a target number.\n\n"
+    "FORMAT: Return a JSON object with a \"questions\" array. Use a mix of the "
+    "three question types:\n"
+    "- \"mcq\": provide \"question\", \"choices\" (exactly four answer strings, "
+    "with no \"A.\"/\"B.\" prefixes), \"correct_index\" (0-3), \"explanation\", "
+    "and \"source_timestamp\".\n"
+    "- \"fill_blank\": provide \"question\" (mark the blank with \"___\"), "
+    "\"correct_answer\", \"acceptable_variants\" (other accepted spellings or "
+    "phrasings — may be an empty list), \"explanation\", and "
+    "\"source_timestamp\".\n"
+    "- \"short_answer\": provide \"question\", \"reference_answer\", and "
+    "\"source_timestamp\".\n"
+    "Mix multiple-choice, fill-in-the-blank, and short-answer questions across "
+    "the quiz."
 )
+
+# Structured-output schema for the quiz. Type-specific fields are optional so
+# one item shape can carry all three question types; the prompt enforces which
+# fields each type must supply.
+QUIZ_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["mcq", "fill_blank", "short_answer"],
+                    },
+                    "question": {"type": "string"},
+                    "choices": {"type": "array", "items": {"type": "string"}},
+                    "correct_index": {"type": "integer"},
+                    "correct_answer": {"type": "string"},
+                    "acceptable_variants": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "reference_answer": {"type": "string"},
+                    "explanation": {"type": "string"},
+                    "source_timestamp": {"type": "string"},
+                },
+                "required": ["type", "question", "source_timestamp"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["questions"],
+    "additionalProperties": False,
+}
+
+GRADE_SYSTEM_PROMPT = (
+    "You are grading a student's short-answer response to a lecture-review "
+    "question. Compare their answer to the reference answer and decide a "
+    "verdict: 'correct' if it captures the key point, 'partial' if it gets the "
+    "main idea but misses a detail, 'incorrect' if it misses or contradicts "
+    "the key point. Be generous with 'partial' — a student who got the main "
+    "idea but missed a detail should get partial credit. Then write feedback "
+    "of 2-3 sentences, addressed to the student, explaining what they got "
+    "right and what they got wrong."
+)
+
+GRADE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {
+            "type": "string",
+            "enum": ["correct", "partial", "incorrect"],
+        },
+        "feedback": {"type": "string"},
+    },
+    "required": ["verdict", "feedback"],
+    "additionalProperties": False,
+}
 
 
 # ---- Helpers -----------------------------------------------------------------
@@ -101,12 +185,15 @@ class Session:
 
     Both workers append to this file as events happen; every append is locked
     and the file is closed each time, so a crash leaves a valid partial file.
+    The generated quiz is cached on the instance so a refresh or repeat request
+    does not regenerate it.
     """
 
     def __init__(self, class_name: str):
         self.class_name = class_name
         self.started_at = datetime.now()
         self.ended = False
+        self.quiz: Optional[dict] = None
 
         class_dir = SESSIONS_DIR / class_name
         class_dir.mkdir(parents=True, exist_ok=True)
@@ -138,8 +225,8 @@ class Session:
         ts = datetime.now().strftime("%H:%M:%S")
         self._append(f"**🎙️ {ts}** — {text}\n\n")
 
-    def append_quiz(self, quiz: str) -> None:
-        self._append(f"\n---\n\n## Practice Quiz\n\n{quiz}\n")
+    def append_quiz(self, quiz_markdown: str) -> None:
+        self._append(f"\n---\n\n## Practice Quiz\n\n{quiz_markdown}\n")
 
     def read(self) -> str:
         with self._lock:
@@ -449,6 +536,86 @@ class AudioWorker:
             bus.broadcast({"type": "error", "text": f"Transcription: {exc}"})
 
 
+# ---- Quiz generation + grading -----------------------------------------------
+
+def generate_quiz(session_markdown: str) -> dict:
+    """Send the merged session log to Claude; return a structured quiz dict."""
+    client = camera_worker.analyzer.client
+    message = client.messages.create(
+        model=MODEL_ID,
+        max_tokens=12000,
+        thinking={"type": "adaptive"},
+        system=QUIZ_SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": f"Here is the lecture session log:\n\n{session_markdown}",
+        }],
+        output_config={"format": {"type": "json_schema", "schema": QUIZ_SCHEMA}},
+    )
+    text = next(b.text for b in message.content if b.type == "text")
+    return json.loads(text)
+
+
+def grade_short_answer(question: str, reference_answer: str,
+                       user_answer: str) -> dict:
+    """Grade a student's short answer against the reference via Claude."""
+    client = camera_worker.analyzer.client
+    message = client.messages.create(
+        model=MODEL_ID,
+        max_tokens=1024,
+        system=GRADE_SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Question:\n{question}\n\n"
+                f"Reference answer:\n{reference_answer}\n\n"
+                f"Student's answer:\n{user_answer}"
+            ),
+        }],
+        output_config={"format": {"type": "json_schema", "schema": GRADE_SCHEMA}},
+    )
+    text = next(b.text for b in message.content if b.type == "text")
+    return json.loads(text)
+
+
+def render_quiz_markdown(quiz: dict) -> str:
+    """Render the structured quiz as human-readable Markdown for the .md file."""
+    lines: list[str] = []
+    answer_key: list[str] = []
+    for i, q in enumerate(quiz.get("questions", []), start=1):
+        ts = q.get("source_timestamp", "—")
+        qtype = q.get("type")
+        question = q.get("question", "")
+        if qtype == "mcq":
+            choices = q.get("choices", [])
+            lines.append(f"**{i}. (Multiple choice)** {question}\n")
+            for j, choice in enumerate(choices):
+                lines.append(f"- {chr(65 + j)}. {choice}")
+            lines.append(f"\n*Source: {ts}*\n")
+            ci = q.get("correct_index", 0)
+            letter = chr(65 + ci) if 0 <= ci < len(choices) else "?"
+            answer_key.append(f"**{i}.** {letter} — {q.get('explanation', '')}")
+        elif qtype == "fill_blank":
+            lines.append(f"**{i}. (Fill in the blank)** {question}\n")
+            lines.append(f"*Source: {ts}*\n")
+            answer_key.append(
+                f"**{i}.** {q.get('correct_answer', '')} — "
+                f"{q.get('explanation', '')}"
+            )
+        elif qtype == "short_answer":
+            lines.append(f"**{i}. (Short answer)** {question}\n")
+            lines.append(f"*Source: {ts}*\n")
+            answer_key.append(
+                f"**{i}.** Reference answer: {q.get('reference_answer', '')}"
+            )
+        else:
+            lines.append(f"**{i}.** {question}\n")
+            lines.append(f"*Source: {ts}*\n")
+    body = "\n".join(lines)
+    key = "\n\n".join(answer_key)
+    return f"{body}\n---\n\n### Answer Key\n\n{key}"
+
+
 # ---- Flask app ---------------------------------------------------------------
 
 app = Flask(__name__)
@@ -486,10 +653,18 @@ def start():
 
 @app.route("/session")
 def session_page():
-    """The main Sentry page. Requires an active session."""
+    """The main Sentry page. Requires an active session.
+
+    If the session has already ended, the cached quiz is handed to the template
+    so a page refresh lands straight on the interactive quiz.
+    """
     if state.session is None:
         return redirect(url_for("landing"))
-    return render_template("index.html", class_name=state.session.class_name)
+    return render_template(
+        "index.html",
+        class_name=state.session.class_name,
+        quiz=state.session.quiz,
+    )
 
 
 @app.route("/video_feed")
@@ -547,19 +722,27 @@ def analyze():
 
 @app.route("/end_session", methods=["POST"])
 def end_session():
-    """Stop the workers, build a practice quiz from the session log, save it."""
+    """Stop the workers, build a practice quiz from the session log, save it.
+
+    The generated quiz is cached on the session, so a page refresh or a repeat
+    request returns the same quiz instead of regenerating (and recharging) it.
+    """
     if state.session is None:
         return jsonify({"ok": False, "error": "No active session."}), 400
 
     sess = state.session
+    if sess.quiz is not None:
+        return jsonify({"ok": True, "quiz": sess.quiz})
+
     camera_worker.stop()
     audio_worker.stop()
     bus.broadcast({"type": "status", "text": "Generating quiz…"})
 
     try:
         quiz = generate_quiz(sess.read())
-        sess.append_quiz(quiz)
+        sess.quiz = quiz
         sess.ended = True
+        sess.append_quiz(render_quiz_markdown(quiz))
         bus.broadcast({"type": "status", "text": "Session ended."})
         return jsonify({"ok": True, "quiz": quiz})
     except Exception as exc:
@@ -567,20 +750,24 @@ def end_session():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-def generate_quiz(session_markdown: str) -> str:
-    """Send the merged session log to Claude and get back a Markdown quiz."""
-    client = camera_worker.analyzer.client
-    message = client.messages.create(
-        model=MODEL_ID,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=QUIZ_SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": f"Here is the lecture session log:\n\n{session_markdown}",
-        }],
-    )
-    return next(b.text for b in message.content if b.type == "text").strip()
+@app.route("/grade_answer", methods=["POST"])
+def grade_answer():
+    """Grade one short-answer response against its reference answer."""
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    reference_answer = (data.get("reference_answer") or "").strip()
+    user_answer = (data.get("user_answer") or "").strip()
+    if not user_answer:
+        return jsonify({
+            "verdict": "incorrect",
+            "feedback": "No answer was submitted.",
+        })
+    try:
+        return jsonify(
+            grade_short_answer(question, reference_answer, user_answer)
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 def _sse(event: dict) -> str:

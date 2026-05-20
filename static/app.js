@@ -1,5 +1,8 @@
-// Sentry web frontend: subscribes to /events (SSE) and drives the UI.
+// Sentry web frontend: live-lecture SSE view + interactive quiz view.
 
+// ---- Live view elements ----
+const liveView = document.getElementById("live-view");
+const quizView = document.getElementById("quiz-view");
 const statusEl = document.getElementById("status");
 const meterText = document.getElementById("meter-text");
 const meterBar = document.getElementById("meter-bar");
@@ -8,8 +11,12 @@ const analyzeBtn = document.getElementById("analyze-btn");
 const clearBtn = document.getElementById("clear-btn");
 const endBtn = document.getElementById("end-btn");
 const transcriptEl = document.getElementById("transcript");
-const quizSection = document.getElementById("quiz-section");
-const quizContent = document.getElementById("quiz-content");
+const videoEl = document.getElementById("video");
+
+// ---- Quiz view elements ----
+const quizCards = document.getElementById("quiz-cards");
+const summaryBanner = document.getElementById("summary-banner");
+const backBtn = document.getElementById("back-btn");
 
 const panels = {
   board_content: document.getElementById("board-content"),
@@ -21,7 +28,12 @@ const panels = {
 const METER_FULL_SCALE_MULTIPLIER = 2;
 
 let transcriptStarted = false;
-let sessionEnded = false;
+let eventSource = null;
+let quizResults = [];  // per-question: "correct" | "partial" | "incorrect" | null
+
+// =====================================================================
+// Live lecture view
+// =====================================================================
 
 function setStatus(text, isError) {
   statusEl.textContent = text;
@@ -87,19 +99,15 @@ function handleEvent(event) {
 }
 
 function connect() {
-  const source = new EventSource("/events");
-  source.onmessage = (e) => {
+  eventSource = new EventSource("/events");
+  eventSource.onmessage = (e) => {
     try {
       handleEvent(JSON.parse(e.data));
     } catch (err) {
       console.error("Bad SSE payload", err);
     }
   };
-  source.onerror = () => {
-    if (sessionEnded) {
-      source.close();
-      return;
-    }
+  eventSource.onerror = () => {
     setStatus("Reconnecting…", true);
     // EventSource auto-reconnects; no manual retry needed.
   };
@@ -138,12 +146,7 @@ endBtn.addEventListener("click", async () => {
     const res = await fetch("/end_session", { method: "POST" });
     const data = await res.json();
     if (data.ok) {
-      sessionEnded = true;
-      quizContent.textContent = data.quiz;
-      quizSection.hidden = false;
-      quizSection.scrollIntoView({ behavior: "smooth" });
-      endBtn.textContent = "Session Ended";
-      setStatus("Session ended.", false);
+      enterQuizMode(data.quiz);
     } else {
       setStatus(`Error: ${data.error}`, true);
       endBtn.disabled = false;
@@ -158,4 +161,275 @@ endBtn.addEventListener("click", async () => {
   }
 });
 
-connect();
+// =====================================================================
+// Quiz view
+// =====================================================================
+
+backBtn.addEventListener("click", () => { window.location = "/"; });
+
+function enterQuizMode(quiz) {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  videoEl.src = "";  // stop the MJPEG stream
+  liveView.hidden = true;
+  quizView.hidden = false;
+  renderQuiz(quiz);
+  window.scrollTo(0, 0);
+}
+
+function renderQuiz(quiz) {
+  const questions = (quiz && quiz.questions) || [];
+  quizResults = questions.map(() => null);
+  quizCards.innerHTML = "";
+  if (questions.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No quiz questions were generated for this session.";
+    quizCards.appendChild(empty);
+  }
+  questions.forEach((q, i) => quizCards.appendChild(buildCard(q, i)));
+  updateSummary();
+}
+
+function recordResult(index, outcome) {
+  quizResults[index] = outcome;
+  updateSummary();
+}
+
+function updateSummary() {
+  const total = quizResults.length;
+  const answered = quizResults.filter((r) => r !== null).length;
+  if (total === 0 || answered < total) {
+    summaryBanner.hidden = true;
+    return;
+  }
+  // MCQ/fill-blank count as correct/incorrect; a short-answer "partial" is
+  // reported separately (worth half a point).
+  const correct = quizResults.filter((r) => r === "correct").length;
+  const partial = quizResults.filter((r) => r === "partial").length;
+  let text = `You got ${correct}/${total} correct`;
+  if (partial > 0) text += `, ${partial} partial`;
+  text += ".";
+  const wasHidden = summaryBanner.hidden;
+  summaryBanner.textContent = text;
+  summaryBanner.hidden = false;
+  if (wasHidden) {
+    summaryBanner.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
+// ---- card scaffolding ----
+
+function makeCard(q, index, typeLabel) {
+  const card = document.createElement("article");
+  card.className = "panel quiz-card";
+
+  const num = document.createElement("div");
+  num.className = "q-number";
+  num.textContent = `Question ${index + 1} · ${typeLabel}`;
+
+  const text = document.createElement("p");
+  text.className = "q-text";
+  text.textContent = q.question || "";
+
+  card.appendChild(num);
+  card.appendChild(text);
+  return card;
+}
+
+function addExplanationSlot(card) {
+  const exp = document.createElement("div");
+  exp.className = "q-explanation";
+  card.appendChild(exp);
+  return exp;
+}
+
+function addSource(card, q) {
+  const src = document.createElement("div");
+  src.className = "q-source";
+  src.textContent = `Source: ${q.source_timestamp || "—"}`;
+  card.appendChild(src);
+}
+
+function revealExplanation(exp, text, tone) {
+  if (tone) exp.classList.add(`tone-${tone}`);
+  if (text) exp.textContent = text;
+  exp.classList.add("show");
+}
+
+function normalize(s) {
+  return (s || "").trim().toLowerCase();
+}
+
+function buildCard(q, index) {
+  switch (q.type) {
+    case "mcq": return buildMcq(q, index);
+    case "fill_blank": return buildFillBlank(q, index);
+    case "short_answer": return buildShortAnswer(q, index);
+    default: return buildShortAnswer(q, index);
+  }
+}
+
+// ---- MCQ ----
+
+function buildMcq(q, index) {
+  const card = makeCard(q, index, "Multiple choice");
+
+  const choices = document.createElement("div");
+  choices.className = "choices";
+  const buttons = (q.choices || []).map((choice) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "choice-btn";
+    btn.textContent = choice;
+    choices.appendChild(btn);
+    return btn;
+  });
+  card.appendChild(choices);
+
+  const exp = addExplanationSlot(card);
+  addSource(card, q);
+
+  buttons.forEach((btn, i) => {
+    btn.addEventListener("click", () => {
+      if (card.dataset.answered) return;
+      card.dataset.answered = "1";
+      buttons.forEach((b, j) => {
+        b.disabled = true;
+        if (j === q.correct_index) b.classList.add("correct");
+      });
+      const isCorrect = i === q.correct_index;
+      if (!isCorrect) btn.classList.add("wrong");
+      revealExplanation(exp, q.explanation);
+      recordResult(index, isCorrect ? "correct" : "incorrect");
+    });
+  });
+  return card;
+}
+
+// ---- Fill in the blank ----
+
+function buildFillBlank(q, index) {
+  const card = makeCard(q, index, "Fill in the blank");
+
+  const row = document.createElement("div");
+  row.className = "answer-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "answer-input";
+  input.placeholder = "Your answer";
+  const checkBtn = document.createElement("button");
+  checkBtn.type = "button";
+  checkBtn.className = "check-btn";
+  checkBtn.textContent = "Check";
+  row.appendChild(input);
+  row.appendChild(checkBtn);
+  card.appendChild(row);
+
+  const exp = addExplanationSlot(card);
+  addSource(card, q);
+
+  function submit() {
+    if (card.dataset.answered) return;
+    const accepted = [q.correct_answer]
+      .concat(q.acceptable_variants || [])
+      .map(normalize);
+    const isCorrect = accepted.includes(normalize(input.value));
+    card.dataset.answered = "1";
+    input.disabled = true;
+    checkBtn.disabled = true;
+    input.classList.add(isCorrect ? "correct" : "wrong");
+    let text = q.explanation || "";
+    if (!isCorrect) {
+      text = `Correct answer: ${q.correct_answer}` + (text ? `\n\n${text}` : "");
+    }
+    revealExplanation(exp, text, isCorrect ? "correct" : "incorrect");
+    recordResult(index, isCorrect ? "correct" : "incorrect");
+  }
+
+  checkBtn.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+  });
+  return card;
+}
+
+// ---- Short answer ----
+
+function buildShortAnswer(q, index) {
+  const card = makeCard(q, index, "Short answer");
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "answer-textarea";
+  textarea.rows = 4;
+  textarea.placeholder = "Your answer";
+  card.appendChild(textarea);
+
+  const gradeBtn = document.createElement("button");
+  gradeBtn.type = "button";
+  gradeBtn.className = "grade-btn";
+  gradeBtn.textContent = "Grade my answer";
+  card.appendChild(gradeBtn);
+
+  const exp = addExplanationSlot(card);
+  addSource(card, q);
+
+  gradeBtn.addEventListener("click", async () => {
+    if (card.dataset.answered) return;
+    const userAnswer = textarea.value.trim();
+    if (!userAnswer) {
+      textarea.focus();
+      return;
+    }
+    gradeBtn.disabled = true;
+    gradeBtn.textContent = "Grading…";
+    try {
+      const res = await fetch("/grade_answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: q.question,
+          reference_answer: q.reference_answer || "",
+          user_answer: userAnswer,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      card.dataset.answered = "1";
+      textarea.disabled = true;
+      gradeBtn.textContent = "Graded";
+      const verdict = data.verdict || "incorrect";
+
+      const badge = document.createElement("span");
+      badge.className = `verdict verdict-${verdict}`;
+      badge.textContent = verdict;
+      gradeBtn.after(badge);
+
+      let text = data.feedback || "";
+      if (q.reference_answer) {
+        text += (text ? "\n\n" : "") + `Reference answer: ${q.reference_answer}`;
+      }
+      revealExplanation(exp, text, verdict);
+      recordResult(index, verdict);
+    } catch (err) {
+      gradeBtn.disabled = false;
+      gradeBtn.textContent = "Grade my answer";
+      revealExplanation(exp, `Could not grade your answer: ${err.message}`);
+    }
+  });
+  return card;
+}
+
+// =====================================================================
+// Boot
+// =====================================================================
+
+if (window.SENTRY_QUIZ) {
+  // Session already ended (e.g. a page refresh) — go straight to the quiz.
+  enterQuizMode(window.SENTRY_QUIZ);
+} else {
+  connect();
+}
