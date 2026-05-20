@@ -169,7 +169,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* ---- Transcript panel ---- */
 
 .transcript {
-  max-height: 220px;
+  max-height: 50vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
