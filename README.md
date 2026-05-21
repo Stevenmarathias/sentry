@@ -1,32 +1,39 @@
 # Sentry
 
-A laptop-mounted webcam app that watches lectures in real time and gives AI-powered feedback using Claude.
+A study companion that watches your lectures and helps you study for the exam.
+
+Sentry runs in your browser during class. It watches the board through your webcam, transcribes the lecture audio with Whisper, and at the end of each session generates an interactive quiz using Claude. Over the semester it builds a per-class concept map — recurring concepts get tagged as "likely on the exam" and woven into future quizzes.
 
 ## What it does
-- Captures frames from a USB webcam pointed at a whiteboard
-- Auto-detects when the board changes
-- Sends frames to Claude (Opus 4.7) for analysis
-- Displays concise feedback in three panels: what's on the board, simple explanation, and what to watch out for
-- Optionally captures audio and transcribes with OpenAI Whisper
+
+- **Live capture.** Auto-triggered board snapshots via OpenCV frame-diff, plus continuous audio transcription via Whisper. Per-class session logs saved to `sessions/<class>/<date>_HHMM.md`.
+- **End-of-session quiz.** Generates a structured quiz with three question types: multiple choice (click to check), fill-in-blank (accepts variants), and short answer (graded by Claude with correct/partial/incorrect verdicts). Every question links back to a source timestamp in the transcript.
+- **Cross-lecture memory.** A per-class `concepts.json` accumulates named concepts across sessions, weighted by frequency and recency. New quizzes mix today's material with 1–2 recurring concepts from past lectures, flagged with a "FROM PRIOR LECTURE — likely on exam" badge.
+- **History and concept browser.** `/history` shows every past session for a class with parsed duration and a link to the quiz. `/class/<name>/concepts` shows the accumulated knowledge graph, sortable by importance, recency, or alphabetical.
+- **Quality-of-life.** Pause/resume mid-session (clean transcript gap, paused-time excluded from elapsed clock). Download any quiz as PDF. MCQ choices reshuffle on every reload so you can't memorize positions.
 
 ## Setup
 
 ```bash
-brew install python-tk@3.13 ffmpeg
+brew install ffmpeg
 git clone https://github.com/Stevenmarathias/sentry.git
 cd sentry
 /opt/homebrew/bin/python3.13 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
 export ANTHROPIC_API_KEY="your-key-here"
-python sentry.py
+.venv/bin/python sentry_web.py
 ```
 
+Then open http://127.0.0.1:5000.
+
 ## Built with
-- Python 3.13 + Tkinter
-- OpenCV for camera capture
-- Anthropic Claude API for vision analysis
-- OpenAI Whisper for audio transcription
+
+- Python 3.13 + Flask
+- OpenCV (board capture)
+- OpenAI Whisper (transcription)
+- Anthropic Claude Opus 4.7 (quiz generation, concept extraction, short-answer grading)
+- reportlab (PDF export)
 
 ## Status
-v1.0 — working prototype
+
+v1.0 — feature complete. Tested end-to-end with real two-session class data; cross-lecture memory correctly surfaces recurring concepts in subsequent quizzes.
