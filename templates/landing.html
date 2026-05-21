@@ -7,41 +7,66 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <main class="landing">
-    <form class="landing-card" method="POST" action="{{ url_for('start') }}">
-      <h1>Sentry</h1>
-      <p class="subtitle">Which class is this for?</p>
+  <main class="app">
+    <header>
+      <div class="title-block">
+        <h1>Sentry</h1>
+      </div>
+      <a class="link" href="{{ url_for('history') }}">View past sessions →</a>
+    </header>
 
-      <select id="class-select" name="class_select">
-        {% for c in classes %}
-          <option value="{{ c }}">{{ c }}</option>
-        {% endfor %}
-        <option value="__new__">New class…</option>
-      </select>
+    <p class="section-label">Your classes</p>
 
-      <input
-        type="text"
-        id="new-class"
-        name="new_class"
-        placeholder="New class name"
-        autocomplete="off">
+    <div class="class-grid">
+      {% for c in classes %}
+      <article class="panel class-card"
+               data-class="{{ c.name }}"
+               data-sessions="{{ c.session_count }}">
+        <div class="class-card-head">
+          <h2 class="class-card-name">{{ c.name }}</h2>
+          <div class="kebab-wrap">
+            <button type="button" class="kebab-btn" aria-label="Class actions">⋮</button>
+            <div class="kebab-menu" hidden>
+              <button type="button" data-action="rename">Rename class</button>
+              <button type="button" data-action="concepts">View concepts</button>
+              <button type="button" data-action="history">View history</button>
+              <button type="button" data-action="delete" class="danger-item">Delete class</button>
+            </div>
+          </div>
+        </div>
+        <p class="class-card-meta">
+          {{ c.session_count }} session{{ '' if c.session_count == 1 else 's' }}
+          · {{ c.concept_count }} concept{{ '' if c.concept_count == 1 else 's' }}
+          {% if c.latest != '—' %}<br>last session {{ c.latest }}{% endif %}
+        </p>
+        <form method="POST" action="{{ url_for('start') }}">
+          <input type="hidden" name="class_select" value="{{ c.name }}">
+          <button type="submit" class="primary">Start new session</button>
+        </form>
+      </article>
+      {% endfor %}
 
-      <button type="submit" class="primary">Start Session</button>
-    </form>
+      <article class="panel class-card new-class-card">
+        <button type="button" id="new-class-toggle" class="add-class-btn">
+          + Create new class
+        </button>
+        <form id="new-class-form" method="POST"
+              action="{{ url_for('start') }}" hidden>
+          <input type="hidden" name="class_select" value="__new__">
+          <input type="text" name="new_class" id="new-class-input"
+                 placeholder="New class name" autocomplete="off">
+          <button type="submit" class="primary">Start session</button>
+        </form>
+      </article>
+    </div>
   </main>
 
   <script>
-    // Reveal the text input only when "New class…" is selected. With no
-    // existing classes, that's the only option, so show it on load too.
-    const select = document.getElementById("class-select");
-    const newClass = document.getElementById("new-class");
-    function sync() {
-      const isNew = select.value === "__new__";
-      newClass.style.display = isNew ? "block" : "none";
-      if (isNew) newClass.focus();
-    }
-    select.addEventListener("change", sync);
-    sync();
+    // url_for can't take a runtime class name; the JS substitutes __C__.
+    window.SENTRY_CONCEPTS_URL =
+      "{{ url_for('class_concepts', class_name='__C__') }}";
+    window.SENTRY_HISTORY_URL = "{{ url_for('history') }}";
   </script>
+  <script src="{{ url_for('static', filename='landing.js') }}"></script>
 </body>
 </html>

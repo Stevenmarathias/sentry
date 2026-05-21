@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentry — {{ class_name }} concepts</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div class="title-block">
+        <h1>Sentry</h1>
+        <span class="class-tag">{{ class_name }}</span>
+      </div>
+      <a class="link" href="{{ url_for('landing') }}">← Home</a>
+    </header>
+
+    <div class="page-head-row">
+      <p class="section-label">Concept memory</p>
+      <div class="sort-toggle">
+        <button type="button" class="sort-btn active" data-sort="importance">Importance</button>
+        <button type="button" class="sort-btn" data-sort="recency">Recency</button>
+        <button type="button" class="sort-btn" data-sort="name">A–Z</button>
+      </div>
+    </div>
+
+    {% if concepts %}
+    <div class="panel concept-panel">
+      <table class="concept-table">
+        <thead>
+          <tr>
+            <th>Concept</th>
+            <th>Category</th>
+            <th>Importance</th>
+            <th>Seen</th>
+            <th>First mention</th>
+            <th>Last mention</th>
+          </tr>
+        </thead>
+        <tbody id="concept-rows">
+          {% for c in concepts %}
+          <tr data-name="{{ c.name | lower }}"
+              data-importance="{{ c.importance }}"
+              data-recency="{{ c.last_key }}">
+            <td class="c-name">{{ c.name }}</td>
+            <td><span class="c-category">{{ c.category }}</span></td>
+            <td class="c-importance">{{ '%.2f' | format(c.importance) }}</td>
+            <td>{{ c.count }}×</td>
+            <td class="c-mention">{{ c.first }}</td>
+            <td class="c-mention">{{ c.last }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="panel empty">No concepts captured for this class yet.</p>
+    {% endif %}
+  </main>
+  <script src="{{ url_for('static', filename='concepts.js') }}"></script>
+</body>
+</html>

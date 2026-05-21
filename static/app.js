@@ -12,6 +12,8 @@ const clearBtn = document.getElementById("clear-btn");
 const endBtn = document.getElementById("end-btn");
 const transcriptEl = document.getElementById("transcript");
 const videoEl = document.getElementById("video");
+const boardTs = document.getElementById("board-ts");
+const badgeLegend = document.getElementById("badge-legend");
 
 // ---- Quiz view elements ----
 const quizCards = document.getElementById("quiz-cards");
@@ -34,6 +36,18 @@ let quizResults = [];  // per-question: "correct" | "partial" | "incorrect" | nu
 // =====================================================================
 // Live lecture view
 // =====================================================================
+
+// Render a duration (seconds) as MM:SS, or H:MM:SS once it passes an hour.
+// Returns null when there is nothing meaningful to show.
+function formatElapsed(seconds) {
+  if (seconds == null || isNaN(seconds)) return null;
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
 
 function setStatus(text, isError) {
   statusEl.textContent = text;
@@ -59,7 +73,7 @@ function updateMeter(diff, threshold, armed) {
   meterThreshold.style.left = `${100 / METER_FULL_SCALE_MULTIPLIER}%`;
 }
 
-function addTranscript(time, text) {
+function addTranscript(label, text) {
   if (!transcriptStarted) {
     transcriptEl.innerHTML = "";
     transcriptStarted = true;
@@ -68,7 +82,7 @@ function addTranscript(time, text) {
   line.className = "transcript-line";
   const ts = document.createElement("span");
   ts.className = "ts";
-  ts.textContent = time;
+  ts.textContent = label;
   line.appendChild(ts);
   line.appendChild(document.createTextNode(" " + text));
   transcriptEl.appendChild(line);
@@ -91,9 +105,15 @@ function handleEvent(event) {
       setPanel(panels.board_content, event.data.board_content);
       setPanel(panels.explanation, event.data.explanation);
       setPanel(panels.watch_out_for, event.data.watch_out_for);
+      if (boardTs) {
+        const label = formatElapsed(event.elapsed);
+        boardTs.textContent = label ? ` · ${label} elapsed` : "";
+      }
       break;
     case "transcript":
-      addTranscript(event.time, event.text);
+      // Timestamps are shown as elapsed time from session start; fall back to
+      // the wall clock if the server did not supply an elapsed value.
+      addTranscript(formatElapsed(event.elapsed) || event.time, event.text);
       break;
   }
 }
@@ -165,7 +185,10 @@ endBtn.addEventListener("click", async () => {
 // Quiz view
 // =====================================================================
 
-backBtn.addEventListener("click", () => { window.location = "/"; });
+backBtn.addEventListener("click", () => {
+  // "/" for a live session; /history when a past session's quiz was re-opened.
+  window.location = document.body.dataset.backUrl || "/";
+});
 
 function enterQuizMode(quiz) {
   if (eventSource) {
@@ -183,6 +206,11 @@ function renderQuiz(quiz) {
   const questions = (quiz && quiz.questions) || [];
   quizResults = questions.map(() => null);
   quizCards.innerHTML = "";
+  // The badge legend explains the orange "FROM PRIOR LECTURE" badge — only
+  // worth showing when this quiz actually carries a recurring question.
+  if (badgeLegend) {
+    badgeLegend.hidden = !questions.some((q) => q.recurring);
+  }
   if (questions.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -256,7 +284,9 @@ function addExplanationSlot(card) {
 function addSource(card, q) {
   const src = document.createElement("div");
   src.className = "q-source";
-  src.textContent = `Source: ${q.source_timestamp || "—"}`;
+  // source_display carries the elapsed-time label; source_timestamp (wall
+  // clock) is the fallback if a quiz predates the display-layer change.
+  src.textContent = `Source: ${q.source_display || q.source_timestamp || "—"}`;
   card.appendChild(src);
 }
 

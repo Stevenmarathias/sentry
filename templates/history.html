@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentry — Session History</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div class="title-block">
+        <h1>Sentry</h1>
+        <span class="class-tag">History</span>
+      </div>
+      <a class="link" href="{{ url_for('landing') }}">← Home</a>
+    </header>
+
+    {% if not classes %}
+    <p class="panel empty">No sessions recorded yet.</p>
+    {% endif %}
+
+    {% for c in classes %}
+    <section class="history-class">
+      <div class="page-head-row">
+        <p class="section-label">{{ c.name }}</p>
+        <a class="link"
+           href="{{ url_for('class_concepts', class_name=c.name) }}">
+          View concepts →
+        </a>
+      </div>
+
+      {% if not c.sessions %}
+      <p class="panel empty">No sessions for this class.</p>
+      {% endif %}
+
+      {% for s in c.sessions %}
+      <a class="panel session-row"
+         href="{{ url_for('history_session', class_name=c.name, filename=s.filename) }}">
+        <div class="session-row-main">
+          <span class="session-date">{{ s.date }}</span>
+          <span class="session-dur">{{ s.duration }}</span>
+        </div>
+        <div class="session-row-stats">
+          <span>{{ s.board_count }} board analyses</span>
+          <span>{{ s.transcript_count }} transcript entries</span>
+          <span>{{ s.concept_count }} concepts</span>
+          {% if not s.has_quiz %}<span class="muted-tag">quiz on open</span>{% endif %}
+        </div>
+      </a>
+      {% endfor %}
+    </section>
+    {% endfor %}
+  </main>
+</body>
+</html>

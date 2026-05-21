@@ -24,9 +24,10 @@ import json
 import os
 import queue
 import re
+import shutil
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -250,6 +251,297 @@ def list_classes() -> list[str]:
     return sorted(d.name for d in SESSIONS_DIR.iterdir() if d.is_dir())
 
 
+# ---- Display helpers (Pass 2A) -----------------------------------------------
+#
+# Timestamps are stored as wall clock in the session markdown (reproducible),
+# but shown to students as time elapsed from session start. These helpers do
+# that conversion at render time; the markdown is never rewritten.
+
+SESSION_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}\.md$")
+PAST_RE = re.compile(r"PAST:\s*(\d{4}-\d{2}-\d{2})\s*—\s*(.+?)\s*$")
+STARTED_RE = re.compile(
+    r"\*\*Started:\*\*\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})"
+)
+BOARD_HEADER_RE = re.compile(
+    r"^#{2,3}.*Board analysis.*?(\d{1,2}:\d{2}:\d{2})", re.M
+)
+TRANSCRIPT_RE = re.compile(r"^\*\*.*?(\d{1,2}:\d{2}:\d{2})\*\*", re.M)
+
+
+def format_elapsed(total_seconds: float) -> str:
+    """Render a duration as MM:SS, or H:MM:SS once it passes an hour."""
+    total = max(0, int(total_seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _clock_to_seconds(clock: str) -> Optional[int]:
+    """Parse an HH:MM:SS (or HH:MM) wall-clock string to seconds since midnight."""
+    parts = (clock or "").strip().split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return None
+    if len(nums) == 3:
+        h, m, s = nums
+    elif len(nums) == 2:
+        h, m, s = nums[0], nums[1], 0
+    else:
+        return None
+    return h * 3600 + m * 60 + s
+
+
+def elapsed_since(wall_clock: str, start: datetime) -> Optional[str]:
+    """Elapsed time from `start` to a wall-clock string, as MM:SS / H:MM:SS.
+
+    Both are treated as the same day; a negative result (a session running
+    past midnight) wraps forward by 24h. Returns None if `wall_clock` will
+    not parse.
+    """
+    secs = _clock_to_seconds(wall_clock)
+    if secs is None:
+        return None
+    start_secs = start.hour * 3600 + start.minute * 60 + start.second
+    delta = secs - start_secs
+    if delta < 0:
+        delta += 24 * 3600
+    return format_elapsed(delta)
+
+
+def _start_from_filename(stem: str) -> Optional[datetime]:
+    """Session start from a `YYYY-MM-DD_HHMM` file stem (minute precision)."""
+    m = re.match(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})$", stem)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(
+            f"{m.group(1)} {m.group(2)}:{m.group(3)}", "%Y-%m-%d %H:%M"
+        )
+    except ValueError:
+        return None
+
+
+def _start_from_markdown(text: str) -> Optional[datetime]:
+    """Session start parsed from the `**Started:**` line of a session file."""
+    m = STARTED_RE.search(text)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
+def _session_start_for_date(class_dir: Path, date: str,
+                            clock: str) -> Optional[datetime]:
+    """Best-effort start of the past session a 'PAST:' mention belongs to.
+
+    Session files are `<date>_<HHMM>.md`; when a date has several, pick the
+    one whose start is the latest at or before the mention's wall-clock time.
+    """
+    if not class_dir.is_dir():
+        return None
+    candidates = []
+    for p in class_dir.glob(f"{date}_*.md"):
+        m = re.match(r"\d{4}-\d{2}-\d{2}_(\d{2})(\d{2})$", p.stem)
+        if m:
+            candidates.append(
+                (int(m.group(1)) * 3600 + int(m.group(2)) * 60, p)
+            )
+    if not candidates:
+        return None
+    candidates.sort()
+    chosen_secs = candidates[0][0]
+    mention = _clock_to_seconds(clock)
+    if mention is not None:
+        at_or_before = [c for c in candidates if c[0] <= mention]
+        if at_or_before:
+            chosen_secs = at_or_before[-1][0]
+    try:
+        return datetime.strptime(date, "%Y-%m-%d") + timedelta(
+            seconds=chosen_secs
+        )
+    except ValueError:
+        return None
+
+
+def display_timestamp(source_timestamp: str, session_start: datetime,
+                      class_dir: Path) -> str:
+    """Convert a quiz question's source_timestamp into an elapsed-time label.
+
+    Today's-lecture timestamps (HH:MM:SS) are measured from `session_start`.
+    A `PAST: <date> — <HH:MM:SS>` tag keeps its date prefix and converts only
+    the time, measured from that past session's start. Anything that will not
+    parse is returned unchanged.
+    """
+    raw = (source_timestamp or "").strip()
+    if not raw:
+        return "—"
+    past = PAST_RE.match(raw)
+    if past:
+        date, clock = past.group(1), past.group(2)
+        start = _session_start_for_date(class_dir, date, clock)
+        elapsed = elapsed_since(clock, start) if start else None
+        return f"PAST: {date} — {elapsed} elapsed" if elapsed else raw
+    elapsed = elapsed_since(raw, session_start)
+    return f"{elapsed} elapsed" if elapsed else raw
+
+
+def annotate_quiz(quiz: dict, session_start: datetime,
+                  class_dir: Path) -> dict:
+    """Add an elapsed-time `source_display` to each quiz question, in place.
+
+    Display-layer only — `source_timestamp` keeps its wall-clock value so the
+    session markdown stays reproducible.
+    """
+    for q in quiz.get("questions", []):
+        q["source_display"] = display_timestamp(
+            q.get("source_timestamp", ""), session_start, class_dir
+        )
+    return quiz
+
+
+def parse_quiz_markdown(md: str) -> Optional[dict]:
+    """Rebuild a structured quiz dict from a session file's Practice Quiz section.
+
+    The inverse of render_quiz_markdown — lets /history re-open a saved quiz
+    with no extra API call. Returns None when there is no quiz section or it
+    cannot be parsed, so the caller can fall back to regenerating one.
+    """
+    try:
+        marker = md.find("## Practice Quiz")
+        if marker == -1:
+            return None
+        body, _, key_part = md[marker:].partition("### Answer Key")
+
+        type_map = {
+            "multiple choice": "mcq",
+            "fill in the blank": "fill_blank",
+            "short answer": "short_answer",
+        }
+        q_re = re.compile(
+            r"\*\*(\d+)\.\s*\(([^)]+)\)\*\*\s*(.+?)(?=\n\*\*\d+\.\s*\(|\Z)",
+            re.S,
+        )
+        questions: dict = {}
+        order: list = []
+        for m in q_re.finditer(body):
+            num = int(m.group(1))
+            qtype = type_map.get(m.group(2).strip().lower(), "short_answer")
+            block = m.group(3)
+            src_m = re.search(r"\*Source:\s*(.+?)\*", block)
+            source = src_m.group(1).strip() if src_m else ""
+            q = {
+                "type": qtype,
+                "question": block.partition("\n")[0].strip(),
+                "source_timestamp": source,
+                "recurring": source.startswith("PAST:"),
+            }
+            if qtype == "mcq":
+                q["choices"] = [
+                    cm.group(1).strip()
+                    for cm in re.finditer(
+                        r"^-\s*[A-Z]\.\s*(.+?)\s*$", block, re.M
+                    )
+                ]
+            questions[num] = q
+            order.append(num)
+
+        if not order:
+            return None
+
+        key_re = re.compile(
+            r"\*\*(\d+)\.\*\*\s*(.+?)(?=\n\*\*\d+\.\*\*|\Z)", re.S
+        )
+        for m in key_re.finditer(key_part):
+            q = questions.get(int(m.group(1)))
+            if not q:
+                continue
+            payload = m.group(2).strip()
+            if q["type"] == "mcq":
+                letter, _, expl = payload.partition(" — ")
+                letter = letter.strip()
+                idx = ord(letter[0]) - 65 if letter else 0
+                choices = q.get("choices", [])
+                q["correct_index"] = idx if 0 <= idx < len(choices) else 0
+                q["explanation"] = expl.strip()
+            elif q["type"] == "fill_blank":
+                answer, _, expl = payload.partition(" — ")
+                q["correct_answer"] = answer.strip()
+                q["acceptable_variants"] = []
+                q["explanation"] = expl.strip()
+            else:
+                ref = payload
+                if ref.startswith("Reference answer:"):
+                    ref = ref[len("Reference answer:"):].strip()
+                q["reference_answer"] = ref
+
+        return {"questions": [questions[n] for n in order]}
+    except Exception as exc:
+        print(f"Warning: could not parse saved quiz ({exc}); regenerating.")
+        return None
+
+
+def session_metrics(md_path: Path, concept_store: Optional[dict]) -> dict:
+    """Parse one session markdown file into the metrics shown on /history."""
+    try:
+        text = md_path.read_text(encoding="utf-8")
+    except Exception:
+        text = ""
+    pre_quiz = text.split("## Practice Quiz")[0]
+
+    board_times = BOARD_HEADER_RE.findall(pre_quiz)
+    transcript_times = TRANSCRIPT_RE.findall(pre_quiz)
+    start = _start_from_markdown(text) or _start_from_filename(md_path.stem)
+
+    duration = "—"
+    all_secs = [s for s in (_clock_to_seconds(t)
+                            for t in board_times + transcript_times)
+                if s is not None]
+    if start is not None and all_secs:
+        start_secs = start.hour * 3600 + start.minute * 60 + start.second
+        delta = max(all_secs) - start_secs
+        if delta < 0:
+            delta += 24 * 3600
+        duration = format_elapsed(delta)
+
+    concept_count = 0
+    if concept_store:
+        concept_count = sum(
+            1 for c in concept_store.get("concepts", [])
+            if any(o.get("session_file") == md_path.name
+                   for o in c.get("occurrences", []))
+        )
+
+    return {
+        "filename": md_path.name,
+        "date": start.strftime("%Y-%m-%d %H:%M") if start else md_path.stem,
+        "duration": duration,
+        "board_count": len(board_times),
+        "transcript_count": len(transcript_times),
+        "concept_count": concept_count,
+        "has_quiz": "## Practice Quiz" in text,
+    }
+
+
+def _mention_label(occ: dict) -> str:
+    """A `YYYY-MM-DD — MM:SS elapsed` label for one concept occurrence."""
+    if not occ:
+        return "—"
+    session_file = occ.get("session_file", "")
+    clock = occ.get("timestamp", "")
+    date = session_file[:10]
+    stem = session_file[:-3] if session_file.endswith(".md") else session_file
+    start = _start_from_filename(stem)
+    elapsed = elapsed_since(clock, start) if start else None
+    if elapsed:
+        return f"{date} — {elapsed} elapsed"
+    return f"{date} — {clock}" if clock else (date or "—")
+
+
 # ---- Session -----------------------------------------------------------------
 
 class Session:
@@ -311,6 +603,17 @@ class AppState:
 
 
 state = AppState()
+
+
+def _session_elapsed() -> Optional[float]:
+    """Seconds since the active session started, or None if there is none.
+
+    Broadcast with live events so the browser can show elapsed-time labels
+    without having to parse wall-clock strings against a start time itself.
+    """
+    if state.session is None:
+        return None
+    return (datetime.now() - state.session.started_at).total_seconds()
 
 
 # ---- Event bus ---------------------------------------------------------------
@@ -486,7 +789,11 @@ class CameraWorker:
     def _run_analysis(self, frame: np.ndarray) -> None:
         try:
             result = self.analyzer.analyze(frame)
-            bus.broadcast({"type": "feedback", "data": result})
+            bus.broadcast({
+                "type": "feedback",
+                "data": result,
+                "elapsed": _session_elapsed(),
+            })
             bus.broadcast({"type": "status", "text": "Watching the board…"})
             if state.session is not None:
                 state.session.append_board_analysis(result)
@@ -601,7 +908,12 @@ class AudioWorker:
             if not text:
                 return
             ts = datetime.now().strftime("%H:%M:%S")
-            bus.broadcast({"type": "transcript", "time": ts, "text": text})
+            bus.broadcast({
+                "type": "transcript",
+                "time": ts,
+                "elapsed": _session_elapsed(),
+                "text": text,
+            })
             if state.session is not None:
                 state.session.append_transcript(text)
         except Exception as exc:
@@ -893,10 +1205,41 @@ camera_worker = CameraWorker()
 audio_worker = AudioWorker()
 
 
+def class_overview(name: str) -> dict:
+    """Per-class summary card data for the landing page."""
+    class_dir = SESSIONS_DIR / name
+    md_files = sorted(class_dir.glob("*.md")) if class_dir.is_dir() else []
+    store = load_concepts(class_dir)
+    latest = "—"
+    if md_files:
+        start = _start_from_filename(md_files[-1].stem)
+        latest = start.strftime("%Y-%m-%d") if start else md_files[-1].stem[:10]
+    return {
+        "name": name,
+        "session_count": len(md_files),
+        "concept_count": len(store.get("concepts", [])) if store else 0,
+        "latest": latest,
+    }
+
+
+def _stop_active_session_if_class(class_name: str) -> None:
+    """Tear down the live session if it belongs to `class_name`.
+
+    The single-process design has no child process to pkill — the in-flight
+    session is `state.session` plus the two workers. Stopping them here ensures
+    a class folder is never renamed or trashed mid-write.
+    """
+    if state.session is not None and state.session.class_name == class_name:
+        camera_worker.stop()
+        audio_worker.stop()
+        state.session = None
+
+
 @app.route("/")
 def landing():
-    """Class-selection landing screen."""
-    return render_template("landing.html", classes=list_classes())
+    """Class-selection landing screen — one card per class."""
+    classes = [class_overview(n) for n in list_classes()]
+    return render_template("landing.html", classes=classes)
 
 
 @app.route("/start", methods=["POST"])
@@ -1033,11 +1376,13 @@ def end_session():
             )
             save_concepts(class_dir, store)
 
-        sess.quiz = quiz
         sess.ended = True
+        # Markdown is appended from the raw quiz (wall-clock source_timestamp);
+        # annotate_quiz then adds elapsed-time source_display for the browser.
         sess.append_quiz(render_quiz_markdown(quiz))
+        sess.quiz = annotate_quiz(quiz, sess.started_at, class_dir)
         bus.broadcast({"type": "status", "text": "Session ended."})
-        return jsonify({"ok": True, "quiz": quiz})
+        return jsonify({"ok": True, "quiz": sess.quiz})
     except Exception as exc:
         bus.broadcast({"type": "error", "text": f"Quiz: {exc}"})
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -1061,6 +1406,139 @@ def grade_answer():
         )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+# ---- History, concepts, class management (Pass 2A) ---------------------------
+
+@app.route("/history")
+def history():
+    """Every session across every class, newest-first, with parsed metrics."""
+    classes = []
+    for name in list_classes():
+        class_dir = SESSIONS_DIR / name
+        store = load_concepts(class_dir)
+        sessions = [
+            session_metrics(md, store)
+            for md in sorted(class_dir.glob("*.md"), reverse=True)
+        ]
+        classes.append({"name": name, "sessions": sessions})
+    return render_template("history.html", classes=classes)
+
+
+@app.route("/history/session/<class_name>/<filename>")
+def history_session(class_name: str, filename: str):
+    """Re-open a past session's quiz: read it from the markdown, else regenerate."""
+    name = sanitize_class_name(class_name)
+    if not name or not SESSION_FILE_RE.match(filename):
+        return redirect(url_for("history"))
+    md_path = SESSIONS_DIR / name / filename
+    if not md_path.is_file():
+        return redirect(url_for("history"))
+
+    md = md_path.read_text(encoding="utf-8")
+    quiz = parse_quiz_markdown(md)
+    if quiz is None:
+        # No saved quiz (older session) — regenerate from the transcript only.
+        transcript = md.split("## Practice Quiz")[0]
+        try:
+            quiz = generate_quiz(transcript, [])
+        except Exception as exc:
+            bus.broadcast({"type": "error", "text": f"Quiz: {exc}"})
+            quiz = {"questions": []}
+
+    start = (_start_from_markdown(md)
+             or _start_from_filename(md_path.stem)
+             or datetime.now())
+    annotate_quiz(quiz, start, md_path.parent)
+    return render_template(
+        "index.html",
+        class_name=name,
+        quiz=quiz,
+        history_mode=True,
+        back_url=url_for("history"),
+    )
+
+
+@app.route("/class/<class_name>/concepts")
+def class_concepts(class_name: str):
+    """Browse a class's accumulated concept memory (concepts.json) as a table."""
+    name = sanitize_class_name(class_name)
+    store = load_concepts(SESSIONS_DIR / name)
+    concepts = []
+    for c in (store.get("concepts", []) if store else []):
+        occ = c.get("occurrences", [])
+        first = min(occ, key=lambda o: o.get("session_file", "")) if occ else {}
+        last = max(occ, key=lambda o: o.get("session_file", "")) if occ else {}
+        concepts.append({
+            "name": c.get("name", ""),
+            "category": c.get("category", "other"),
+            "importance": c.get("importance_score", 0.0),
+            "count": len(occ),
+            "first": _mention_label(first),
+            "last": _mention_label(last),
+            "last_key": (last.get("session_file", "")
+                         + last.get("timestamp", "")),
+        })
+    concepts.sort(key=lambda c: c["importance"], reverse=True)
+    return render_template("concepts.html", class_name=name, concepts=concepts)
+
+
+@app.route("/rename_class", methods=["POST"])
+def rename_class():
+    """Rename a class folder atomically and keep concepts.json's name in sync."""
+    data = request.get_json(silent=True) or {}
+    old = sanitize_class_name(data.get("old", ""))
+    new = sanitize_class_name(data.get("new", ""))
+    if not old or not new:
+        return jsonify({"ok": False, "error": "Invalid class name."}), 400
+    src, dst = SESSIONS_DIR / old, SESSIONS_DIR / new
+    if not src.is_dir():
+        return jsonify({"ok": False, "error": "Class not found."}), 404
+    if new == old:
+        return jsonify({"ok": True})
+    if dst.exists():
+        return jsonify(
+            {"ok": False, "error": "A class with that name already exists."}
+        ), 409
+
+    _stop_active_session_if_class(old)
+    try:
+        os.rename(src, dst)
+    except OSError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    store = load_concepts(dst)
+    if store is not None:
+        store["class_name"] = new
+        save_concepts(dst, store)
+    return jsonify({"ok": True})
+
+
+@app.route("/delete_class", methods=["POST"])
+def delete_class():
+    """Move a class folder to ~/.Trash after a typed-name confirmation."""
+    data = request.get_json(silent=True) or {}
+    name = sanitize_class_name(data.get("name", ""))
+    confirm = sanitize_class_name(data.get("confirm", ""))
+    src = SESSIONS_DIR / name
+    if not name or not src.is_dir():
+        return jsonify({"ok": False, "error": "Class not found."}), 404
+    if confirm != name:
+        return jsonify(
+            {"ok": False, "error": "Confirmation did not match."}
+        ), 400
+
+    _stop_active_session_if_class(name)
+    trash = Path.home() / ".Trash"
+    try:
+        trash.mkdir(parents=True, exist_ok=True)
+        dest = trash / name
+        if dest.exists():
+            dest = trash / f"{name} {datetime.now():%Y-%m-%d %H%M%S}"
+        shutil.move(str(src), str(dest))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True})
 
 
 def _sse(event: dict) -> str:

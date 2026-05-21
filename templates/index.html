@@ -6,7 +6,7 @@
   <title>Sentry — {{ class_name }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body data-back-url="{{ back_url | default('/', true) }}">
   <main class="app">
     <!-- ===== Live lecture view ===== -->
     <div id="live-view">
@@ -19,7 +19,9 @@
       </header>
 
       <section class="preview">
-        <img id="video" src="{{ url_for('video_feed') }}" alt="Live camera preview">
+        <img id="video"
+             src="{% if not history_mode %}{{ url_for('video_feed') }}{% endif %}"
+             alt="Live camera preview">
       </section>
 
       <section class="meter">
@@ -41,7 +43,7 @@
 
       <section class="panels">
         <article class="panel">
-          <h2>On the board</h2>
+          <h2>On the board<span id="board-ts" class="board-ts"></span></h2>
           <p id="board-content" class="empty">Waiting for the board to settle…</p>
         </article>
         <article class="panel">
@@ -73,14 +75,20 @@
       </header>
 
       <h2 class="quiz-heading">Practice Quiz</h2>
+      <p id="badge-legend" class="badge-legend" hidden>
+        Questions marked <strong>FROM PRIOR LECTURE</strong> test concepts from
+        earlier sessions in this class that have come up again — likely material
+        for an exam.
+      </p>
       <div id="summary-banner" class="summary-banner" hidden></div>
       <div id="quiz-cards"></div>
     </div>
   </main>
 
   <script>
-    // Populated by the server when the session has already ended; otherwise
-    // null, and the page boots into the live-lecture view.
+    // Populated by the server when the session has already ended (or when a
+    // past session's quiz is re-opened); otherwise null, and the page boots
+    // into the live-lecture view.
     window.SENTRY_QUIZ = {{ quiz | tojson }};
   </script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
