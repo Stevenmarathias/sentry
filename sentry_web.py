@@ -267,6 +267,10 @@ BOARD_HEADER_RE = re.compile(
     r"^#{2,3}.*Board analysis.*?(\d{1,2}:\d{2}:\d{2})", re.M
 )
 TRANSCRIPT_RE = re.compile(r"^\*\*.*?(\d{1,2}:\d{2}:\d{2})\*\*", re.M)
+# Pause/resume annotation, e.g. "*— paused 19:30:00, resumed 19:35:00 —*".
+PAUSE_MARKER_RE = re.compile(
+    r"paused\s+(\d{1,2}:\d{2}:\d{2}),\s*resumed\s+(\d{1,2}:\d{2}:\d{2})"
+)
 
 
 def format_elapsed(total_seconds: float) -> str:
@@ -507,7 +511,14 @@ def session_metrics(md_path: Path, concept_store: Optional[dict]) -> dict:
         delta = max(all_secs) - start_secs
         if delta < 0:
             delta += 24 * 3600
-        duration = format_elapsed(delta)
+        # Exclude time the session was paused, so the duration matches the
+        # elapsed clock the student saw live.
+        for pa, ra in PAUSE_MARKER_RE.findall(pre_quiz):
+            gap = (_clock_to_seconds(ra) or 0) - (_clock_to_seconds(pa) or 0)
+            if gap < 0:
+                gap += 24 * 3600
+            delta -= gap
+        duration = format_elapsed(max(0, delta))
 
     concept_count = 0
     if concept_store:
@@ -560,6 +571,12 @@ class Session:
         self.ended = False
         self.quiz: Optional[dict] = None
 
+        # Pause/resume: paused_seconds accumulates completed pauses so the
+        # elapsed clock can exclude any time the session spent paused.
+        self.paused = False
+        self.paused_seconds = 0.0
+        self._pause_started_at: Optional[datetime] = None
+
         class_dir = SESSIONS_DIR / class_name
         class_dir.mkdir(parents=True, exist_ok=True)
         stamp = self.started_at.strftime("%Y-%m-%d_%H%M")
@@ -593,6 +610,34 @@ class Session:
     def append_quiz(self, quiz_markdown: str) -> None:
         self._append(f"\n---\n\n## Practice Quiz\n\n{quiz_markdown}\n")
 
+    def append_pause_marker(self, paused_at: str, resumed_at: str) -> None:
+        """Append an italic transcript annotation marking a pause gap."""
+        self._append(f"*— paused {paused_at}, resumed {resumed_at} —*\n\n")
+
+    def mark_paused(self) -> None:
+        """Record the start of a pause (idempotent)."""
+        if self.paused:
+            return
+        self.paused = True
+        self._pause_started_at = datetime.now()
+
+    def mark_resumed(self) -> tuple[str, str]:
+        """End the current pause; return its (paused_at, resumed_at) wall clocks."""
+        resumed = datetime.now()
+        paused = self._pause_started_at or resumed
+        self.paused_seconds += (resumed - paused).total_seconds()
+        self.paused = False
+        self._pause_started_at = None
+        return paused.strftime("%H:%M:%S"), resumed.strftime("%H:%M:%S")
+
+    def elapsed(self) -> float:
+        """Seconds since start, excluding any time spent paused."""
+        total = (datetime.now() - self.started_at).total_seconds()
+        total -= self.paused_seconds
+        if self.paused and self._pause_started_at is not None:
+            total -= (datetime.now() - self._pause_started_at).total_seconds()
+        return max(0.0, total)
+
     def read(self) -> str:
         with self._lock:
             return self.file_path.read_text(encoding="utf-8")
@@ -609,12 +654,13 @@ state = AppState()
 def _session_elapsed() -> Optional[float]:
     """Seconds since the active session started, or None if there is none.
 
-    Broadcast with live events so the browser can show elapsed-time labels
-    without having to parse wall-clock strings against a start time itself.
+    Excludes time spent paused, so the elapsed clock does not advance while
+    the session is paused. Broadcast with live events so the browser can show
+    elapsed-time labels without parsing wall-clock strings against a start time.
     """
     if state.session is None:
         return None
-    return (datetime.now() - state.session.started_at).total_seconds()
+    return state.session.elapsed()
 
 
 # ---- Event bus ---------------------------------------------------------------
@@ -679,6 +725,7 @@ class CameraWorker:
         self._stop_evt = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._started = False
+        self._paused = False
 
     # ---- lifecycle ----------------------------------------------------------
 
@@ -689,6 +736,7 @@ class CameraWorker:
         self.detector = ChangeDetector()
         self._latest_frame = None
         self._analyzing = False
+        self._paused = False
         self._last_analysis_time = 0.0
 
         self._cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -717,10 +765,27 @@ class CameraWorker:
             self._cap = None
         self._started = False
 
+    def pause(self) -> None:
+        """Suspend board-change detection and auto-analysis (camera idles)."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Resume board-change detection and auto-analysis."""
+        self._paused = False
+
     # ---- capture loop -------------------------------------------------------
 
     def _capture_loop(self) -> None:
         while not self._stop_evt.is_set():
+            if self._paused:
+                # Idle: no frame reads, no detection, no auto-trigger. Keep
+                # broadcasting a "paused" meter so the UI shows the state.
+                now = time.time()
+                if now - self._last_meter_emit > METER_INTERVAL:
+                    self._last_meter_emit = now
+                    bus.broadcast({"type": "meter", "paused": True})
+                time.sleep(0.1)
+                continue
             ok, frame = self._cap.read()
             if not ok:
                 time.sleep(0.05)
@@ -768,6 +833,8 @@ class CameraWorker:
         """Manual "Analyze Now". Returns (accepted, message)."""
         if not self._started:
             return False, "Session not running."
+        if self._paused:
+            return False, "Paused — resume to analyze."
         if self._analyzing:
             return False, "Already analyzing…"
         with self._frame_lock:
@@ -828,6 +895,7 @@ class AudioWorker:
         self._stop_evt = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._started = False
+        self._paused = False
         self._model_loaded = False
 
     # ---- lifecycle ----------------------------------------------------------
@@ -836,6 +904,7 @@ class AudioWorker:
         if self._started:
             return
         self._stop_evt.clear()
+        self._paused = False
         with self._lock:
             self._chunks = []
         try:
@@ -871,6 +940,32 @@ class AudioWorker:
             self._thread.join(timeout=25)
             self._thread = None
         self._started = False
+
+    def pause(self) -> None:
+        """Stop recording; drop the partial chunk so the gap is clean."""
+        if not self._started or self._paused:
+            return
+        self._paused = True
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+            except Exception:
+                pass
+        with self._lock:
+            self._chunks = []
+
+    def resume(self) -> None:
+        """Restart capture from an empty buffer (no overlap, no duplicates)."""
+        if not self._started or not self._paused:
+            return
+        with self._lock:
+            self._chunks = []
+        if self._stream is not None:
+            try:
+                self._stream.start()
+            except Exception as exc:
+                bus.broadcast({"type": "error", "text": f"Audio resume: {exc}"})
+        self._paused = False
 
     # ---- capture + transcription -------------------------------------------
 
@@ -1354,6 +1449,33 @@ def _stop_active_session_if_class(class_name: str) -> None:
         state.session = None
 
 
+def _pause_session() -> None:
+    """Pause the live session: camera, audio, and the elapsed clock."""
+    sess = state.session
+    if sess is None or sess.paused:
+        return
+    camera_worker.pause()
+    audio_worker.pause()
+    sess.mark_paused()
+    bus.broadcast({"type": "status", "text": "Paused."})
+
+
+def _resume_session() -> None:
+    """Resume the live session and record the pause gap in the transcript."""
+    sess = state.session
+    if sess is None or not sess.paused:
+        return
+    paused_at, resumed_at = sess.mark_resumed()
+    camera_worker.resume()
+    audio_worker.resume()
+    sess.append_pause_marker(paused_at, resumed_at)
+    bus.broadcast({
+        "type": "pause_marker",
+        "text": f"— paused {paused_at}, resumed {resumed_at} —",
+    })
+    bus.broadcast({"type": "status", "text": "Watching the board…"})
+
+
 @app.route("/")
 def landing():
     """Class-selection landing screen — one card per class."""
@@ -1397,6 +1519,7 @@ def session_page():
         class_name=state.session.class_name,
         quiz=state.session.quiz,
         session_id=state.session.file_path.stem,
+        paused=state.session.paused,
     )
 
 
@@ -1426,7 +1549,9 @@ def events():
     def stream():
         q = bus.subscribe()
         # Prime the new client with the current resting status.
-        yield _sse({"type": "status", "text": "Watching the board…"})
+        resting = ("Paused." if (state.session and state.session.paused)
+                   else "Watching the board…")
+        yield _sse({"type": "status", "text": resting})
         try:
             while True:
                 try:
@@ -1453,6 +1578,19 @@ def analyze():
     return jsonify({"accepted": accepted, "message": message})
 
 
+@app.route("/toggle_pause", methods=["POST"])
+def toggle_pause():
+    """Pause or resume the live session (camera, audio, and elapsed clock)."""
+    sess = state.session
+    if sess is None or sess.ended:
+        return jsonify({"ok": False, "error": "No active session."}), 400
+    if sess.paused:
+        _resume_session()
+    else:
+        _pause_session()
+    return jsonify({"ok": True, "paused": sess.paused})
+
+
 @app.route("/end_session", methods=["POST"])
 def end_session():
     """Stop the workers, extract concepts, build a quiz, update class memory.
@@ -1466,6 +1604,11 @@ def end_session():
     sess = state.session
     if sess.quiz is not None:
         return jsonify({"ok": True, "quiz": sess.quiz})
+
+    # Ending while paused: resume first so the workers and the pause clock
+    # close out cleanly (the pause gap is still recorded in the transcript).
+    if sess.paused:
+        _resume_session()
 
     camera_worker.stop()
     audio_worker.stop()

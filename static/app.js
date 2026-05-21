@@ -9,6 +9,7 @@ const meterBar = document.getElementById("meter-bar");
 const meterThreshold = document.getElementById("meter-threshold");
 const analyzeBtn = document.getElementById("analyze-btn");
 const clearBtn = document.getElementById("clear-btn");
+const pauseBtn = document.getElementById("pause-btn");
 const endBtn = document.getElementById("end-btn");
 const transcriptEl = document.getElementById("transcript");
 const videoEl = document.getElementById("video");
@@ -32,6 +33,7 @@ const METER_FULL_SCALE_MULTIPLIER = 2;
 
 let transcriptStarted = false;
 let eventSource = null;
+let isPaused = false;  // mirrors the server's pause state for the live session
 let quizResults = [];  // per-question: "correct" | "partial" | "incorrect" | null
 
 // =====================================================================
@@ -66,12 +68,21 @@ function setPanel(el, text) {
 }
 
 function updateMeter(diff, threshold, armed) {
+  meterBar.classList.remove("paused");
   meterText.textContent = `${diff.toFixed(2)} / ${threshold.toFixed(2)} ${armed ? "[armed]" : "[idle]"}`;
   const fullScale = threshold * METER_FULL_SCALE_MULTIPLIER || 1;
   const pct = Math.min(100, (diff / fullScale) * 100);
   meterBar.style.width = `${pct}%`;
   meterBar.classList.toggle("armed", Boolean(armed));
   meterThreshold.style.left = `${100 / METER_FULL_SCALE_MULTIPLIER}%`;
+}
+
+// While paused the camera worker emits a "paused" meter — show a flat gray bar.
+function showPausedMeter() {
+  meterText.textContent = "paused";
+  meterBar.style.width = "100%";
+  meterBar.classList.remove("armed");
+  meterBar.classList.add("paused");
 }
 
 function addTranscript(label, text) {
@@ -91,13 +102,33 @@ function addTranscript(label, text) {
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
+// An italic gray annotation marking a pause gap in the transcript.
+function addPauseMarker(text) {
+  if (!transcriptStarted) {
+    transcriptEl.innerHTML = "";
+    transcriptStarted = true;
+  }
+  const line = document.createElement("p");
+  line.className = "transcript-pause";
+  line.textContent = text;
+  transcriptEl.appendChild(line);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
 function handleEvent(event) {
   switch (event.type) {
     case "meter":
-      updateMeter(event.diff, event.threshold, event.armed);
+      if (event.paused) {
+        showPausedMeter();
+      } else {
+        updateMeter(event.diff, event.threshold, event.armed);
+      }
       break;
     case "status":
       setStatus(event.text, false);
+      break;
+    case "pause_marker":
+      addPauseMarker(event.text);
       break;
     case "error":
       setStatus(`Error: ${event.text}`, true);
@@ -143,8 +174,9 @@ analyzeBtn.addEventListener("click", async () => {
   } catch (err) {
     setStatus("Could not reach server", true);
   } finally {
-    // Brief debounce so rapid clicks don't spam the backend.
-    setTimeout(() => { analyzeBtn.disabled = false; }, 1000);
+    // Brief debounce so rapid clicks don't spam the backend. Stay disabled
+    // if the session was paused while the request was in flight.
+    setTimeout(() => { analyzeBtn.disabled = isPaused; }, 1000);
   }
 });
 
@@ -153,6 +185,31 @@ clearBtn.addEventListener("click", () => {
   setPanel(panels.explanation, "");
   setPanel(panels.watch_out_for, "");
   setStatus("Cleared.", false);
+});
+
+// Pause/resume: the button label and analyze availability follow server state.
+function setPauseUI(paused) {
+  isPaused = paused;
+  pauseBtn.textContent = paused ? "Resume" : "Pause";
+  analyzeBtn.disabled = paused;
+}
+
+pauseBtn.addEventListener("click", async () => {
+  pauseBtn.disabled = true;
+  try {
+    const res = await fetch("/toggle_pause", { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      setPauseUI(data.paused);
+      setStatus(data.paused ? "Paused." : "Resumed.", false);
+    } else {
+      setStatus(data.error || "Could not toggle pause.", true);
+    }
+  } catch (err) {
+    setStatus("Could not reach server", true);
+  } finally {
+    pauseBtn.disabled = false;
+  }
 });
 
 endBtn.addEventListener("click", async () => {
@@ -477,5 +534,8 @@ if (window.SENTRY_QUIZ) {
   // Session already ended (e.g. a page refresh) — go straight to the quiz.
   enterQuizMode(window.SENTRY_QUIZ);
 } else {
+  // The pause button's label is server-rendered; sync JS state to it so a
+  // refresh mid-pause keeps the UI consistent.
+  setPauseUI(pauseBtn.textContent.trim() === "Resume");
   connect();
 }

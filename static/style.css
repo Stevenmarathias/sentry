@@ -101,6 +101,7 @@ h1 {
   transition: width 0.2s ease, background 0.2s ease;
 }
 .meter-bar.armed { background: var(--armed); }
+.meter-bar.paused { background: var(--muted); }
 .meter-threshold {
   position: absolute;
   top: -2px;
@@ -186,6 +187,11 @@ button:disabled { opacity: 0.5; cursor: default; }
   font-variant-numeric: tabular-nums;
   font-size: 12px;
   margin-right: 4px;
+}
+.transcript-pause {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--muted);
 }
 
 /* ---- View containers ---- */
