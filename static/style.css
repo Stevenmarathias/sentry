@@ -196,6 +196,10 @@ button:disabled { opacity: 0.5; cursor: default; }
   flex-direction: column;
   gap: 16px;
 }
+/* `display: flex` above would otherwise override `[hidden]`, so the inactive
+   view (live vs. quiz) would never actually be hidden. */
+#live-view[hidden],
+#quiz-view[hidden] { display: none; }
 
 /* ---- Quiz view ---- */
 
@@ -496,6 +500,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   flex-direction: column;
   gap: 10px;
 }
+/* Keep the `hidden` attribute effective despite the `display: flex` above. */
+#new-class-form[hidden] { display: none; }
 #new-class-form input[type="text"] {
   width: 100%;
   padding: 10px 12px;
