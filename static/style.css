@@ -207,6 +207,16 @@ button:disabled { opacity: 0.5; cursor: default; }
   flex: 0 0 auto;
 }
 
+/* Quiz-view header actions: Download as PDF + Back to lecture */
+.quiz-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.quiz-actions button {
+  flex: 0 0 auto;
+}
+
 .quiz-heading {
   font-size: 12px;
   font-weight: 600;

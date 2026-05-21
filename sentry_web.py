@@ -41,6 +41,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     url_for,
 )
 
@@ -1198,6 +1199,124 @@ def render_quiz_markdown(quiz: dict) -> str:
     return f"{body}\n---\n\n### Answer Key\n\n{key}"
 
 
+# ---- Quiz PDF export (Pass 2B) -----------------------------------------------
+
+def build_quiz_pdf(quiz: dict, class_name: str, session_date: str):
+    """Render a quiz dict to a printable PDF, returned as an in-memory buffer.
+
+    reportlab is imported lazily so a missing dependency only breaks the PDF
+    route — pause/resume and the rest of the app keep working.
+    """
+    from io import BytesIO
+    from xml.sax.saxutils import escape
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer,
+    )
+
+    grey = HexColor("#666666")
+    body = ParagraphStyle("body", fontName="Times-Roman", fontSize=11,
+                          leading=15)
+    title = ParagraphStyle("title", fontName="Times-Bold", fontSize=18,
+                           leading=22)
+    subtitle = ParagraphStyle("subtitle", fontName="Times-Roman", fontSize=11,
+                              leading=14, textColor=grey)
+    qheader = ParagraphStyle("qheader", fontName="Times-Bold", fontSize=14,
+                             leading=17, spaceAfter=6)
+    choice = ParagraphStyle("choice", parent=body, leftIndent=20, spaceAfter=2)
+    source = ParagraphStyle("source", fontName="Times-Italic", fontSize=9,
+                            leading=12, textColor=grey, spaceBefore=4)
+    keyhdr = ParagraphStyle("keyhdr", fontName="Times-Bold", fontSize=14,
+                            leading=17, spaceAfter=8)
+    keyitem = ParagraphStyle("keyitem", parent=body, spaceAfter=6)
+
+    type_labels = {
+        "mcq": "Multiple choice",
+        "fill_blank": "Fill in the blank",
+        "short_answer": "Short answer",
+    }
+    questions = quiz.get("questions", [])
+
+    flow = [
+        Paragraph(escape(f"{class_name} — Practice Quiz"), title),
+        Paragraph(escape(f"Session: {session_date}"), subtitle),
+        Spacer(1, 18),
+    ]
+
+    for i, q in enumerate(questions, start=1):
+        qtype = q.get("type", "")
+        label = type_labels.get(qtype, "Question")
+        block = [Paragraph(escape(f"Question {i}  ({label})"), qheader)]
+
+        qtext = q.get("question", "")
+        if q.get("recurring"):
+            qtext = "[FROM PRIOR LECTURE] " + qtext
+        block.append(Paragraph(escape(qtext), body))
+
+        if qtype == "mcq":
+            block.append(Spacer(1, 4))
+            for j, ch in enumerate(q.get("choices", [])):
+                block.append(
+                    Paragraph(f"{chr(65 + j)}. {escape(ch)}", choice)
+                )
+        elif qtype == "fill_blank":
+            block.append(Spacer(1, 4))
+            block.append(Paragraph("Answer: " + "_" * 40, body))
+        elif qtype == "short_answer":
+            block.append(Spacer(1, 4))
+            block.append(Paragraph("Answer:", body))
+            block.append(Spacer(1, 54))  # blank space to write a response
+
+        src = q.get("source_display") or q.get("source_timestamp") or "—"
+        block.append(Paragraph(escape(f"Source: {src}"), source))
+        # Keep each question (header through source) on a single page.
+        flow.append(KeepTogether(block))
+        flow.append(Spacer(1, 14))
+
+    flow.append(Spacer(1, 6))
+    flow.append(HRFlowable(width="100%", thickness=1, color=grey))
+    flow.append(Spacer(1, 12))
+    flow.append(Paragraph("Answer Key", keyhdr))
+
+    for i, q in enumerate(questions, start=1):
+        qtype = q.get("type", "")
+        expl = q.get("explanation", "")
+        if qtype == "mcq":
+            choices = q.get("choices", [])
+            ci = q.get("correct_index", 0)
+            if 0 <= ci < len(choices):
+                answer = f"{chr(65 + ci)}. {choices[ci]}"
+            else:
+                answer = "—"
+            text = f"<b>{i}.</b> {escape(answer)}"
+            if expl:
+                text += f" — {escape(expl)}"
+        elif qtype == "fill_blank":
+            text = f"<b>{i}.</b> {escape(q.get('correct_answer', ''))}"
+            if expl:
+                text += f" — {escape(expl)}"
+        elif qtype == "short_answer":
+            text = (f"<b>{i}.</b> Reference answer: "
+                    f"{escape(q.get('reference_answer', ''))}")
+        else:
+            text = f"<b>{i}.</b>"
+        flow.append(Paragraph(text, keyitem))
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+        topMargin=0.75 * inch, bottomMargin=0.75 * inch,
+        title=f"{class_name} Practice Quiz",
+    )
+    doc.build(flow)
+    buf.seek(0)
+    return buf
+
+
 # ---- Flask app ---------------------------------------------------------------
 
 app = Flask(__name__)
@@ -1277,6 +1396,7 @@ def session_page():
         "index.html",
         class_name=state.session.class_name,
         quiz=state.session.quiz,
+        session_id=state.session.file_path.stem,
     )
 
 
@@ -1408,6 +1528,52 @@ def grade_answer():
         return jsonify({"error": str(exc)}), 500
 
 
+# ---- Quiz PDF download (Pass 2B) ---------------------------------------------
+
+QUIZ_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}$")
+
+
+@app.route("/quiz/<class_name>/<session_id>/pdf")
+def quiz_pdf(class_name: str, session_id: str):
+    """Download a session's quiz as a printable PDF.
+
+    Uses the cached quiz the UI is showing when it matches the active session;
+    otherwise the quiz is parsed back out of the session markdown file.
+    """
+    name = sanitize_class_name(class_name)
+    if not name or not QUIZ_ID_RE.match(session_id):
+        return redirect(url_for("landing"))
+    class_dir = SESSIONS_DIR / name
+
+    quiz = None
+    sess = state.session
+    if (sess is not None and sess.class_name == name
+            and sess.file_path.stem == session_id and sess.quiz is not None):
+        quiz = sess.quiz
+
+    if quiz is None:
+        md_path = class_dir / f"{session_id}.md"
+        if not md_path.is_file():
+            return redirect(url_for("landing"))
+        md = md_path.read_text(encoding="utf-8")
+        quiz = parse_quiz_markdown(md)
+        if quiz is None:
+            return jsonify({"error": "No saved quiz for this session."}), 404
+        start = (_start_from_markdown(md)
+                 or _start_from_filename(session_id)
+                 or datetime.now())
+        annotate_quiz(quiz, start, class_dir)
+
+    try:
+        pdf = build_quiz_pdf(quiz, name, session_id[:10])
+    except Exception as exc:
+        return jsonify({"error": f"PDF generation failed: {exc}"}), 500
+
+    download = f"{name.replace(' ', '_')}_{session_id[:10]}_quiz.pdf"
+    return send_file(pdf, mimetype="application/pdf",
+                     as_attachment=True, download_name=download)
+
+
 # ---- History, concepts, class management (Pass 2A) ---------------------------
 
 @app.route("/history")
@@ -1454,6 +1620,7 @@ def history_session(class_name: str, filename: str):
         "index.html",
         class_name=name,
         quiz=quiz,
+        session_id=md_path.stem,
         history_mode=True,
         back_url=url_for("history"),
     )

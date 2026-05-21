@@ -71,7 +71,13 @@
           <h1>Sentry</h1>
           <span class="class-tag">{{ class_name }}</span>
         </div>
-        <button id="back-btn">Back to lecture</button>
+        <div class="quiz-actions">
+          <button id="pdf-btn"
+                  data-url="{{ url_for('quiz_pdf', class_name=class_name, session_id=session_id) }}">
+            Download as PDF
+          </button>
+          <button id="back-btn">Back to lecture</button>
+        </div>
       </header>
 
       <h2 class="quiz-heading">Practice Quiz</h2>

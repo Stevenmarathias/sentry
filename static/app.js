@@ -19,6 +19,7 @@ const badgeLegend = document.getElementById("badge-legend");
 const quizCards = document.getElementById("quiz-cards");
 const summaryBanner = document.getElementById("summary-banner");
 const backBtn = document.getElementById("back-btn");
+const pdfBtn = document.getElementById("pdf-btn");
 
 const panels = {
   board_content: document.getElementById("board-content"),
@@ -189,6 +190,14 @@ backBtn.addEventListener("click", () => {
   // "/" for a live session; /history when a past session's quiz was re-opened.
   window.location = document.body.dataset.backUrl || "/";
 });
+
+if (pdfBtn) {
+  // The route responds with Content-Disposition: attachment, so navigating to
+  // it downloads the PDF without leaving the quiz view.
+  pdfBtn.addEventListener("click", () => {
+    if (pdfBtn.dataset.url) window.location = pdfBtn.dataset.url;
+  });
+}
 
 function enterQuizMode(quiz) {
   if (eventSource) {
