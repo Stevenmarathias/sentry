@@ -35,8 +35,11 @@ if (newToggle && newForm) {
 function closeAllMenus() {
   document.querySelectorAll(".kebab-menu").forEach((m) => { m.hidden = true; });
 }
-// A click anywhere else dismisses an open menu.
+// A click anywhere else, or the Escape key, dismisses an open menu.
 document.addEventListener("click", closeAllMenus);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeAllMenus();
+});
 
 document.querySelectorAll(".class-card[data-class]").forEach((card) => {
   const name = card.dataset.class;

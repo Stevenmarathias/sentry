@@ -464,6 +464,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   gap: 2px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
+/* The `display: flex` above otherwise overrides the browser's
+   `[hidden] { display: none }`, leaving the menu impossible to dismiss. */
+.kebab-menu[hidden] { display: none; }
 .kebab-menu button {
   flex: none;
   width: 100%;
