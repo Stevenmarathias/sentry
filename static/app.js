@@ -377,12 +377,31 @@ function buildCard(q, index) {
 
 // ---- MCQ ----
 
+// Fisher-Yates shuffle of an MCQ's choices that also tracks where the correct
+// answer landed. Render-time only — the quiz JSON (server cache, PDF) is left
+// untouched, so re-studying a quiz tests the concept, not memorised positions.
+function shuffleChoices(choices, correctIndex) {
+  const items = choices.map((text, i) => ({ text, correct: i === correctIndex }));
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  return {
+    choices: items.map((it) => it.text),
+    correctIndex: items.findIndex((it) => it.correct),
+  };
+}
+
 function buildMcq(q, index) {
   const card = makeCard(q, index, "Multiple choice");
 
+  // Shuffle before building buttons so the click handlers below bind against
+  // the post-shuffle correctIndex and grade correctly.
+  const shuffled = shuffleChoices(q.choices || [], q.correct_index);
+
   const choices = document.createElement("div");
   choices.className = "choices";
-  const buttons = (q.choices || []).map((choice) => {
+  const buttons = shuffled.choices.map((choice) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "choice-btn";
@@ -401,9 +420,9 @@ function buildMcq(q, index) {
       card.dataset.answered = "1";
       buttons.forEach((b, j) => {
         b.disabled = true;
-        if (j === q.correct_index) b.classList.add("correct");
+        if (j === shuffled.correctIndex) b.classList.add("correct");
       });
-      const isCorrect = i === q.correct_index;
+      const isCorrect = i === shuffled.correctIndex;
       if (!isCorrect) btn.classList.add("wrong");
       revealExplanation(exp, q.explanation);
       recordResult(index, isCorrect ? "correct" : "incorrect");
