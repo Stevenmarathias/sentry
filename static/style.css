@@ -284,6 +284,13 @@ button:disabled { opacity: 0.5; cursor: default; }
   margin-bottom: -8px;
 }
 
+/* Subtitle line shown under the heading for /class/<n>/exam (Pass 4). */
+.exam-meta {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
 .summary-banner {
   background: rgba(91, 141, 239, 0.12);
   border: 1px solid rgba(91, 141, 239, 0.4);

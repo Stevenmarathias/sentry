@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentry — {{ class_name }} practice exam</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div class="title-block">
+        <h1>Sentry</h1>
+        <span class="class-tag">{{ class_name }}</span>
+      </div>
+      <a class="link" href="{{ url_for('landing') }}">← Home</a>
+    </header>
+    <h2 class="quiz-heading">Practice Exam</h2>
+    <p class="panel empty">{{ message }}</p>
+  </main>
+</body>
+</html>

@@ -5,6 +5,10 @@ function conceptsUrl(name) {
   return window.SENTRY_CONCEPTS_URL.replace("__C__", encodeURIComponent(name));
 }
 
+function examUrl(name) {
+  return window.SENTRY_EXAM_URL.replace("__C__", encodeURIComponent(name));
+}
+
 async function postJSON(url, body) {
   try {
     const res = await fetch(url, {
@@ -68,6 +72,8 @@ function handleAction(action, name, card) {
     window.location = conceptsUrl(name);
   } else if (action === "history") {
     window.location = window.SENTRY_HISTORY_URL;
+  } else if (action === "exam") {
+    window.location = examUrl(name);
   } else if (action === "rename") {
     renameClass(name);
   } else if (action === "delete") {

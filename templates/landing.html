@@ -28,6 +28,7 @@
             <button type="button" class="kebab-btn" aria-label="Class actions">⋮</button>
             <div class="kebab-menu" hidden>
               <button type="button" data-action="rename">Rename class</button>
+              <button type="button" data-action="exam">📝 Generate practice exam</button>
               <button type="button" data-action="concepts">View concepts</button>
               <button type="button" data-action="history">View history</button>
               <button type="button" data-action="delete" class="danger-item">Delete class</button>
@@ -73,6 +74,8 @@
     // url_for can't take a runtime class name; the JS substitutes __C__.
     window.SENTRY_CONCEPTS_URL =
       "{{ url_for('class_concepts', class_name='__C__') }}";
+    window.SENTRY_EXAM_URL =
+      "{{ url_for('class_exam', class_name='__C__') }}";
     window.SENTRY_HISTORY_URL = "{{ url_for('history') }}";
   </script>
   <script src="{{ url_for('static', filename='landing.js') }}"></script>

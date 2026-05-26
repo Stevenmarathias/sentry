@@ -162,6 +162,72 @@ QUIZ_SCHEMA = {
     "additionalProperties": False,
 }
 
+EXAM_SYSTEM_PROMPT = (
+    "You are Sentry, a study assistant. You are given the highest-importance "
+    "concepts from a student's class, drawn from a semester of recorded "
+    "lectures. Each concept comes with a short definition and a transcript "
+    "snippet showing it in context. Generate a 20-question consolidated "
+    "practice exam.\n\n"
+    "COVERAGE: Every concept in the list must appear in at least one "
+    "question. Distribute coverage across all concepts — do not stack many "
+    "questions on the same one while ignoring others.\n\n"
+    "SIZING: Generate exactly 20 questions, with roughly a 60/20/20 split — "
+    "about 12 multiple-choice, 4 fill-in-the-blank, and 4 short-answer.\n\n"
+    "GROUNDING: Base each question on the definition and snippet provided "
+    "for the concept it covers. Do not extrapolate to unrelated material; if "
+    "a concept's snippet is thin, write a thinner question rather than "
+    "padding with outside knowledge.\n\n"
+    "SOURCING: For each question include `source_session` (the markdown "
+    "filename the concept came from, e.g. \"2026-05-13_1430.md\") and "
+    "`source_timestamp` (HH:MM:SS). Copy them exactly from the concept's "
+    "source line above its snippet.\n\n"
+    "FORMAT: Same JSON schema as the end-of-session quiz, with an added "
+    "source_session field. mcq: question, choices (exactly 4, no letter "
+    "prefixes), correct_index (0-3), explanation, source_timestamp, "
+    "source_session. fill_blank: question (blank as \"___\"), "
+    "correct_answer, acceptable_variants (may be empty), explanation, "
+    "source_timestamp, source_session. short_answer: question, "
+    "reference_answer, source_timestamp, source_session. Mix all three "
+    "types across the exam."
+)
+
+EXAM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["mcq", "fill_blank", "short_answer"],
+                    },
+                    "question": {"type": "string"},
+                    "choices": {"type": "array", "items": {"type": "string"}},
+                    "correct_index": {"type": "integer"},
+                    "correct_answer": {"type": "string"},
+                    "acceptable_variants": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "reference_answer": {"type": "string"},
+                    "explanation": {"type": "string"},
+                    "source_timestamp": {"type": "string"},
+                    "source_session": {"type": "string"},
+                },
+                "required": [
+                    "type", "question",
+                    "source_timestamp", "source_session",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["questions"],
+    "additionalProperties": False,
+}
+
 GRADE_SYSTEM_PROMPT = (
     "You are grading a student's short-answer response to a lecture-review "
     "question. Compare their answer to the reference answer and decide a "
@@ -1407,10 +1473,162 @@ def render_quiz_markdown(quiz: dict) -> str:
     return f"{body}\n---\n\n### Answer Key\n\n{key}"
 
 
+# ---- Semester practice exam (Pass 4) -----------------------------------------
+#
+# /class/<name>/exam composes one consolidated exam drawing from the whole
+# semester. It reuses concepts.json (Pass 1), the existing quiz UI (Pass 2),
+# and the PDF route (Pass 2B). Results are cached in-process so a refresh of
+# the URL returns the same exam, while a fresh visit (no ?ts param) generates
+# a new one and redirects to its timestamped URL.
+
+EXAM_SNIPPET_HALF_WINDOW = 600   # characters of session markdown on each side
+EXAM_TOP_CONCEPTS = 15           # candidates sent to Claude (importance-ranked)
+EXAM_MIN_CONCEPTS = 5            # below this, render the empty state instead
+
+exam_cache: dict = {}            # (class_name, ts) -> {"exam","session_count","concept_count","error"}
+
+
+def session_snippet(class_dir: Path, session_file: str, timestamp: str,
+                    half_window: int = EXAM_SNIPPET_HALF_WINDOW) -> Optional[str]:
+    """Return a chunk of session markdown surrounding `timestamp`.
+
+    Returns None when the file is missing; falls back to the opening of the
+    session if the literal timestamp string can't be located in the body.
+    """
+    path = class_dir / session_file
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    pre = text.split("## Practice Quiz")[0]
+    idx = pre.find(timestamp)
+    if idx < 0:
+        return pre[:half_window * 2]
+    start = max(0, idx - half_window)
+    end = min(len(pre), idx + half_window)
+    return pre[start:end]
+
+
+def generate_practice_exam(class_name: str) -> dict:
+    """Build a 20-question semester practice exam from a class's concept memory.
+
+    Returns {"exam", "session_count", "concept_count", "error", "detail"}. A
+    `not_enough_concepts` error covers missing concepts.json, too few stored
+    concepts, or all referenced sessions deleted; `api` covers a Claude failure.
+    """
+    class_dir = SESSIONS_DIR / class_name
+    if not class_dir.is_dir():
+        return {"error": "not_enough_concepts"}
+
+    store = load_concepts(class_dir)
+    all_concepts = store.get("concepts", []) if store else []
+    if len(all_concepts) < EXAM_MIN_CONCEPTS:
+        return {"error": "not_enough_concepts"}
+
+    top = sorted(
+        all_concepts,
+        key=lambda c: c.get("importance_score", 0.0),
+        reverse=True,
+    )[:EXAM_TOP_CONCEPTS]
+
+    # Pull each concept's most recent occurrence + a transcript snippet; drop
+    # concepts whose session file has been deleted (Pass 4 edge case).
+    selected: list[dict] = []
+    for c in top:
+        occs = c.get("occurrences", [])
+        if not occs:
+            continue
+        latest = max(occs, key=lambda o: o.get("session_file", ""))
+        sf = latest.get("session_file", "")
+        if not sf or not (class_dir / sf).is_file():
+            continue
+        ts = latest.get("timestamp", "")
+        snippet = session_snippet(class_dir, sf, ts)
+        if not snippet:
+            continue
+        selected.append({
+            "name": c.get("name", ""),
+            "category": c.get("category", "other"),
+            "definition": latest.get("definition", ""),
+            "source_session": sf,
+            "source_timestamp": ts,
+            "snippet": snippet,
+        })
+
+    if len(selected) < 3:
+        return {"error": "not_enough_concepts"}
+
+    parts = []
+    for c in selected:
+        parts.append(
+            f"### {c['name']} ({c['category']})\n"
+            f"- Definition: {c['definition']}\n"
+            f"- Source: {c['source_session']} at {c['source_timestamp']}\n"
+            f"- Snippet:\n{c['snippet']}\n"
+        )
+    user_text = (
+        f"PRACTICE-EXAM CONCEPTS for class \"{class_name}\":\n\n"
+        + "\n---\n\n".join(parts)
+        + "\n\nGenerate the 20-question practice exam now."
+    )
+
+    try:
+        client = camera_worker.analyzer.client
+        message = client.messages.create(
+            model=MODEL_ID,
+            max_tokens=16000,
+            thinking={"type": "adaptive"},
+            system=EXAM_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_text}],
+            output_config={
+                "format": {"type": "json_schema", "schema": EXAM_SCHEMA},
+            },
+        )
+        text = next(b.text for b in message.content if b.type == "text")
+        exam = json.loads(text)
+    except Exception as exc:
+        return {"error": "api", "detail": str(exc)}
+
+    return {
+        "exam": exam,
+        "session_count": len(list(class_dir.glob("*.md"))),
+        "concept_count": len(all_concepts),
+        "error": None,
+    }
+
+
+def annotate_exam(exam: dict, class_dir: Path) -> dict:
+    """Add `source_display` ('From: DATE session — MM:SS elapsed') per question.
+
+    Also force-clears `recurring`: every exam question is from a prior lecture
+    by definition, so the FROM PRIOR LECTURE badge would be meaningless.
+    """
+    for q in exam.get("questions", []):
+        sf = q.get("source_session", "")
+        ts = q.get("source_timestamp", "")
+        date = sf[:10] if sf else ""
+        stem = sf[:-3] if sf.endswith(".md") else sf
+        start = _start_from_filename(stem) if stem else None
+        elapsed = elapsed_since(ts, start) if start else None
+        if elapsed and date:
+            q["source_display"] = f"From: {date} session — {elapsed} elapsed"
+        elif date:
+            q["source_display"] = f"From: {date} session — {ts or '—'}"
+        else:
+            q["source_display"] = f"From: {sf or '—'}"
+        q["recurring"] = False
+    return exam
+
+
 # ---- Quiz PDF export (Pass 2B) -----------------------------------------------
 
-def build_quiz_pdf(quiz: dict, class_name: str, session_date: str):
+def build_quiz_pdf(quiz: dict, class_name: str, session_date: str, *,
+                   title_suffix: str = "Practice Quiz",
+                   subtitle_prefix: str = "Session: "):
     """Render a quiz dict to a printable PDF, returned as an in-memory buffer.
+
+    title_suffix / subtitle_prefix let the exam path render
+    "Practice Exam / Generated from N sessions · M concepts" instead of the
+    end-of-session "Practice Quiz / Session: DATE".
 
     reportlab is imported lazily so a missing dependency only breaks the PDF
     route — pause/resume and the rest of the app keep working.
@@ -1449,8 +1667,8 @@ def build_quiz_pdf(quiz: dict, class_name: str, session_date: str):
     questions = quiz.get("questions", [])
 
     flow = [
-        Paragraph(escape(f"{class_name} — Practice Quiz"), title),
-        Paragraph(escape(f"Session: {session_date}"), subtitle),
+        Paragraph(escape(f"{class_name} — {title_suffix}"), title),
+        Paragraph(escape(f"{subtitle_prefix}{session_date}"), subtitle),
         Spacer(1, 18),
     ]
 
@@ -1479,7 +1697,10 @@ def build_quiz_pdf(quiz: dict, class_name: str, session_date: str):
             block.append(Spacer(1, 54))  # blank space to write a response
 
         src = q.get("source_display") or q.get("source_timestamp") or "—"
-        block.append(Paragraph(escape(f"Source: {src}"), source))
+        # Exam questions self-label with "From: <date> session — ..."; the
+        # "Source: " prefix is only added when the label isn't already framed.
+        prefix = "" if src.startswith("From:") else "Source: "
+        block.append(Paragraph(escape(f"{prefix}{src}"), source))
         # Keep each question (header through source) on a single page.
         flow.append(KeepTogether(block))
         flow.append(Spacer(1, 14))
@@ -1817,13 +2038,37 @@ QUIZ_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}$")
 
 @app.route("/quiz/<class_name>/<session_id>/pdf")
 def quiz_pdf(class_name: str, session_id: str):
-    """Download a session's quiz as a printable PDF.
+    """Download a session's quiz — or a semester practice exam — as a PDF.
 
-    Uses the cached quiz the UI is showing when it matches the active session;
-    otherwise the quiz is parsed back out of the session markdown file.
+    A session_id of the form "exam-<cache_ts>" pulls from the practice-exam
+    cache (Pass 4); otherwise the existing session path runs, using the cached
+    quiz when it matches the active session and falling back to the markdown.
     """
     name = sanitize_class_name(class_name)
-    if not name or not QUIZ_ID_RE.match(session_id):
+    if not name:
+        return redirect(url_for("landing"))
+
+    # Practice-exam PDFs (Pass 4): the quiz view rendered by /class/<n>/exam
+    # uses session_id="exam-<ts>"; the PDF button reaches us here.
+    if session_id.startswith("exam-"):
+        cached = exam_cache.get((name, session_id[5:]))
+        if not cached or not cached.get("exam"):
+            return jsonify({"error": "Exam not in cache."}), 404
+        try:
+            subtitle = (f"{cached['session_count']} sessions · "
+                        f"{cached['concept_count']} concepts")
+            pdf = build_quiz_pdf(
+                cached["exam"], name, subtitle,
+                title_suffix="Practice Exam",
+                subtitle_prefix="Generated from ",
+            )
+        except Exception as exc:
+            return jsonify({"error": f"PDF generation failed: {exc}"}), 500
+        download = f"{name.replace(' ', '_')}_practice_exam.pdf"
+        return send_file(pdf, mimetype="application/pdf",
+                         as_attachment=True, download_name=download)
+
+    if not QUIZ_ID_RE.match(session_id):
         return redirect(url_for("landing"))
     class_dir = SESSIONS_DIR / name
 
@@ -1907,6 +2152,58 @@ def history_session(class_name: str, filename: str):
         back_url=url_for("history"),
         mode="board",
     )
+
+
+@app.route("/class/<class_name>/exam")
+def class_exam(class_name: str):
+    """Semester practice exam — top 15 concepts → 20 questions via Claude.
+
+    A bare visit always regenerates and redirects to ?ts=<new>; refreshing the
+    timestamped URL is a cache hit. Process restart clears the cache, so the
+    next bare visit naturally regenerates.
+    """
+    name = sanitize_class_name(class_name)
+    if not name or not (SESSIONS_DIR / name).is_dir():
+        return redirect(url_for("landing"))
+
+    ts = request.args.get("ts", "")
+    if ts:
+        cached = exam_cache.get((name, ts))
+        if cached and cached.get("exam"):
+            return render_template(
+                "index.html",
+                class_name=name,
+                quiz=cached["exam"],
+                session_id=f"exam-{ts}",
+                history_mode=True,
+                back_url=url_for("landing"),
+                mode="board",
+                is_exam=True,
+                exam_session_count=cached["session_count"],
+                exam_concept_count=cached["concept_count"],
+            )
+        # Stale link (process restart, etc.) — regenerate below.
+
+    result = generate_practice_exam(name)
+    if result.get("error") == "not_enough_concepts":
+        return render_template(
+            "exam_empty.html",
+            class_name=name,
+            message=("Not enough concepts yet — record a few more sessions "
+                     "and try again."),
+        )
+    if result.get("error"):
+        return render_template(
+            "exam_empty.html",
+            class_name=name,
+            message=f"Could not generate exam: "
+                    f"{result.get('detail') or result['error']}",
+        )
+
+    annotate_exam(result["exam"], SESSIONS_DIR / name)
+    new_ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    exam_cache[(name, new_ts)] = result
+    return redirect(url_for("class_exam", class_name=name, ts=new_ts))
 
 
 @app.route("/class/<class_name>/concepts")

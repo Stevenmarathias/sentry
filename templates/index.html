@@ -86,7 +86,13 @@
         </div>
       </header>
 
-      <h2 class="quiz-heading">Practice Quiz</h2>
+      <h2 class="quiz-heading">{{ 'Practice Exam' if is_exam else 'Practice Quiz' }}</h2>
+      {% if is_exam %}
+      <p class="exam-meta">
+        Generated from {{ exam_session_count }} session{{ '' if exam_session_count == 1 else 's' }},
+        {{ exam_concept_count }} concept{{ '' if exam_concept_count == 1 else 's' }}.
+      </p>
+      {% endif %}
       <p id="badge-legend" class="badge-legend" hidden>
         Questions marked <strong>FROM PRIOR LECTURE</strong> test concepts from
         earlier sessions in this class that have come up again — likely material

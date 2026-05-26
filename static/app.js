@@ -401,7 +401,10 @@ function addSource(card, q) {
   src.className = "q-source";
   // source_display carries the elapsed-time label; source_timestamp (wall
   // clock) is the fallback if a quiz predates the display-layer change.
-  src.textContent = `Source: ${q.source_display || q.source_timestamp || "—"}`;
+  // Exam questions self-label ("From: 2026-05-13 session — …") so we skip the
+  // "Source: " prefix there to avoid "Source: From: …".
+  const label = q.source_display || q.source_timestamp || "—";
+  src.textContent = label.startsWith("From:") ? label : `Source: ${label}`;
   card.appendChild(src);
 }
 
