@@ -277,6 +277,9 @@ PAUSE_MARKER_RE = re.compile(
 )
 # Capture-mode header line written by Session.__init__ — parsed by /history.
 MODE_RE = re.compile(r"\*\*Mode:\*\*\s*(Board|Slide)", re.IGNORECASE)
+# Inline marker appended by Session.append_mode_switch_marker on mid-session
+# toggle — its presence tells /history the session wasn't single-mode.
+MODE_SWITCH_RE = re.compile(r"switched to (Board|Slide) mode", re.IGNORECASE)
 
 
 def format_elapsed(total_seconds: float) -> str:
@@ -536,6 +539,7 @@ def session_metrics(md_path: Path, concept_store: Optional[dict]) -> dict:
 
     mode_match = MODE_RE.search(text)
     mode = mode_match.group(1).lower() if mode_match else "board"
+    toggled = bool(MODE_SWITCH_RE.search(pre_quiz))
 
     return {
         "filename": md_path.name,
@@ -546,6 +550,7 @@ def session_metrics(md_path: Path, concept_store: Optional[dict]) -> dict:
         "concept_count": concept_count,
         "has_quiz": "## Practice Quiz" in text,
         "mode": mode,
+        "toggled": toggled,
     }
 
 
@@ -626,6 +631,19 @@ class Session:
     def append_pause_marker(self, paused_at: str, resumed_at: str) -> None:
         """Append an italic transcript annotation marking a pause gap."""
         self._append(f"*— paused {paused_at}, resumed {resumed_at} —*\n\n")
+
+    def append_mode_switch_marker(self, new_mode: str) -> str:
+        """Append an italic transcript marker for a mid-session mode toggle.
+
+        Uses elapsed-time formatting (same as quiz source timestamps) and
+        returns the label so the live UI can show the same string. The
+        markdown header keeps the *starting* mode; these inline markers
+        carry the timeline — same pattern as pause/resume.
+        """
+        label = format_elapsed(self.elapsed())
+        mode_label = "Slide" if new_mode == "slide" else "Board"
+        self._append(f"*— switched to {mode_label} mode at {label} —*\n\n")
+        return label
 
     def mark_paused(self) -> None:
         """Record the start of a pause (idempotent)."""
@@ -817,6 +835,20 @@ class CameraWorker:
         advanced slides during the pause. Harmless no-op in board mode."""
         self._last_captured_hash = None
         self._paused = False
+
+    def set_mode(self, mode: str) -> None:
+        """Switch capture mode mid-session and reset the now-stale baseline.
+
+        Mirrors how resume() clears baselines so the very next frame is
+        treated as new content. _capture_loop reads self._mode every frame
+        (Pass 3 dispatch), so the new trigger takes effect immediately.
+        """
+        if mode not in ("board", "slide") or mode == self._mode:
+            return
+        self._mode = mode
+        self._last_captured_hash = None
+        # Re-instantiate the motion detector — same reset start() performs.
+        self.detector = ChangeDetector()
 
     # ---- capture loop -------------------------------------------------------
 
@@ -1675,6 +1707,27 @@ def toggle_pause():
     else:
         _pause_session()
     return jsonify({"ok": True, "paused": sess.paused})
+
+
+@app.route("/toggle_mode", methods=["POST"])
+def toggle_mode():
+    """Flip capture mode mid-session. Header stays as starting mode; an inline
+    italic marker records the switch in the transcript (and is surfaced live)."""
+    sess = state.session
+    if sess is None or sess.ended:
+        return jsonify({"ok": False, "error": "No active session."}), 400
+    new_mode = "slide" if sess.mode == "board" else "board"
+    sess.mode = new_mode
+    camera_worker.set_mode(new_mode)
+    label = sess.append_mode_switch_marker(new_mode)
+    mode_label = "Slide" if new_mode == "slide" else "Board"
+    # Reuse the pause_marker SSE channel — same italic-gray transcript line.
+    bus.broadcast({
+        "type": "pause_marker",
+        "text": f"— switched to {mode_label} mode at {label} —",
+    })
+    bus.broadcast({"type": "status", "text": f"Switched to {mode_label} mode."})
+    return jsonify({"ok": True, "mode": new_mode})
 
 
 @app.route("/end_session", methods=["POST"])

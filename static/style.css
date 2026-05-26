@@ -60,7 +60,27 @@ header {
   border-radius: 6px;
   padding: 2px 8px;
   white-space: nowrap;
+  /* Keep the chip compact when it's rendered as a <button> (a flex item that
+     would otherwise pick up the global `button { flex: 1 }` and stretch). */
+  flex: 0 0 auto;
 }
+
+/* Interactive form: clicking flips Board <-> Slide mid-session. The hover
+   icon (Pass 3.1) appears on hover so the affordance is discoverable but
+   the chip stays quiet at rest. */
+#mode-toggle {
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+#mode-toggle::after {
+  content: " ↔";
+  margin-left: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+#mode-toggle:hover { filter: brightness(1.15); }
+#mode-toggle:hover::after { opacity: 0.75; }
+#mode-toggle:disabled { opacity: 0.6; cursor: default; }
 .mode-badge.mode-board {
   color: var(--muted);
   background: rgba(138, 144, 156, 0.10);

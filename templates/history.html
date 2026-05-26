@@ -42,7 +42,7 @@
           <span class="session-dur">{{ s.duration }}</span>
         </div>
         <div class="session-row-stats">
-          <span class="mode-tag mode-{{ s.mode }}">{{ '📊 Slide' if s.mode == 'slide' else '✏️ Board' }}</span>
+          <span class="mode-tag mode-{{ s.mode }}">{{ '📊 Slide' if s.mode == 'slide' else '✏️ Board' }}{% if s.toggled %} + toggled{% endif %}</span>
           <span>{{ s.board_count }} {{ 'slides' if s.mode == 'slide' else 'board analyses' }}</span>
           <span>{{ s.transcript_count }} transcript entries</span>
           <span>{{ s.concept_count }} concepts</span>

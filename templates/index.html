@@ -14,9 +14,11 @@
         <div class="title-block">
           <h1>Sentry</h1>
           <span class="class-tag">{{ class_name }}</span>
-          <span class="mode-badge mode-{{ mode|default('board') }}">
+          <button type="button" id="mode-toggle"
+                  class="mode-badge mode-{{ mode|default('board') }}"
+                  title="Switch capture mode">
             {{ '📊 Slide mode' if mode == 'slide' else '✏️ Board mode' }}
-          </span>
+          </button>
         </div>
         <span id="status" class="status">Connecting…</span>
       </header>
@@ -29,7 +31,7 @@
 
       <section class="meter">
         <div class="meter-labels">
-          <span>{{ 'slide diff' if mode == 'slide' else 'motion' }}</span>
+          <span id="meter-label">{{ 'slide diff' if mode == 'slide' else 'motion' }}</span>
           <span id="meter-text">—</span>
         </div>
         <div class="meter-track">

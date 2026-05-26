@@ -15,6 +15,8 @@ const transcriptEl = document.getElementById("transcript");
 const videoEl = document.getElementById("video");
 const boardTs = document.getElementById("board-ts");
 const badgeLegend = document.getElementById("badge-legend");
+const modeToggle = document.getElementById("mode-toggle");
+const meterLabel = document.getElementById("meter-label");
 
 // ---- Quiz view elements ----
 const quizCards = document.getElementById("quiz-cards");
@@ -226,6 +228,38 @@ pauseBtn.addEventListener("click", async () => {
     pauseBtn.disabled = false;
   }
 });
+
+// Mid-session mode toggle. The chip's text + class flip in place; the meter
+// label follows, and the next meter SSE event swaps the visualisation since
+// the server tags meters with `mode`.
+function applyMode(mode) {
+  if (!modeToggle) return;
+  modeToggle.textContent = mode === "slide" ? "📊 Slide mode" : "✏️ Board mode";
+  modeToggle.classList.toggle("mode-slide", mode === "slide");
+  modeToggle.classList.toggle("mode-board", mode !== "slide");
+  if (meterLabel) {
+    meterLabel.textContent = mode === "slide" ? "slide diff" : "motion";
+  }
+}
+
+if (modeToggle) {
+  modeToggle.addEventListener("click", async () => {
+    modeToggle.disabled = true;
+    try {
+      const res = await fetch("/toggle_mode", { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        applyMode(data.mode);
+      } else {
+        setStatus(data.error || "Could not toggle mode.", true);
+      }
+    } catch (err) {
+      setStatus("Could not reach server", true);
+    } finally {
+      modeToggle.disabled = false;
+    }
+  });
+}
 
 endBtn.addEventListener("click", async () => {
   if (!confirm("End the session? This stops the camera and microphone and generates a practice quiz.")) {
