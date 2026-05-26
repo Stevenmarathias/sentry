@@ -41,6 +41,10 @@
         </p>
         <form method="POST" action="{{ url_for('start') }}">
           <input type="hidden" name="class_select" value="{{ c.name }}">
+          <div class="mode-picker">
+            <label><input type="radio" name="capture_mode" value="board" checked> ✏️ Board</label>
+            <label><input type="radio" name="capture_mode" value="slide"> 📊 Slide</label>
+          </div>
           <button type="submit" class="primary">Start new session</button>
         </form>
       </article>
@@ -55,6 +59,10 @@
           <input type="hidden" name="class_select" value="__new__">
           <input type="text" name="new_class" id="new-class-input"
                  placeholder="New class name" autocomplete="off">
+          <div class="mode-picker">
+            <label><input type="radio" name="capture_mode" value="board" checked> ✏️ Board</label>
+            <label><input type="radio" name="capture_mode" value="slide"> 📊 Slide</label>
+          </div>
           <button type="submit" class="primary">Start session</button>
         </form>
       </article>

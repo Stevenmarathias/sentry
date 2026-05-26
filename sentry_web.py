@@ -72,6 +72,10 @@ AUDIO_CHUNK_SECONDS = 20.0   # length of each audio chunk handed to Whisper
 RECENT_SESSIONS = 3          # window for the recency term of importance_score
 MAX_RECURRING_CONCEPTS = 5   # high-importance past concepts offered to the quiz
 
+# Slide-capture mode (Pass 3): perceptual-hash trigger for slide-based lectures.
+SLIDE_HASH_THRESHOLD = 10    # Hamming distance (out of 64) that counts as a new slide
+SLIDE_COOLDOWN_SECONDS = 3   # minimum gap between slide captures (skips brief occlusions)
+
 SESSIONS_DIR = Path(__file__).resolve().parent / "sessions"
 
 QUIZ_SYSTEM_PROMPT = (
@@ -271,6 +275,8 @@ TRANSCRIPT_RE = re.compile(r"^\*\*.*?(\d{1,2}:\d{2}:\d{2})\*\*", re.M)
 PAUSE_MARKER_RE = re.compile(
     r"paused\s+(\d{1,2}:\d{2}:\d{2}),\s*resumed\s+(\d{1,2}:\d{2}:\d{2})"
 )
+# Capture-mode header line written by Session.__init__ — parsed by /history.
+MODE_RE = re.compile(r"\*\*Mode:\*\*\s*(Board|Slide)", re.IGNORECASE)
 
 
 def format_elapsed(total_seconds: float) -> str:
@@ -528,6 +534,9 @@ def session_metrics(md_path: Path, concept_store: Optional[dict]) -> dict:
                    for o in c.get("occurrences", []))
         )
 
+    mode_match = MODE_RE.search(text)
+    mode = mode_match.group(1).lower() if mode_match else "board"
+
     return {
         "filename": md_path.name,
         "date": start.strftime("%Y-%m-%d %H:%M") if start else md_path.stem,
@@ -536,6 +545,7 @@ def session_metrics(md_path: Path, concept_store: Optional[dict]) -> dict:
         "transcript_count": len(transcript_times),
         "concept_count": concept_count,
         "has_quiz": "## Practice Quiz" in text,
+        "mode": mode,
     }
 
 
@@ -565,8 +575,9 @@ class Session:
     does not regenerate it.
     """
 
-    def __init__(self, class_name: str):
+    def __init__(self, class_name: str, mode: str = "board"):
         self.class_name = class_name
+        self.mode = mode if mode in ("board", "slide") else "board"
         self.started_at = datetime.now()
         self.ended = False
         self.quiz: Optional[dict] = None
@@ -583,9 +594,11 @@ class Session:
         self.file_path = class_dir / f"{stamp}.md"
 
         self._lock = threading.Lock()
+        mode_label = "Slide" if self.mode == "slide" else "Board"
         self._append(
             f"# Sentry Session — {class_name}\n\n"
             f"**Started:** {self.started_at:%Y-%m-%d %H:%M}\n\n"
+            f"**Mode:** {mode_label}\n\n"
             f"---\n\n"
         )
 
@@ -698,6 +711,28 @@ class EventBus:
 bus = EventBus()
 
 
+# ---- Slide-detection helpers (Pass 3) ----------------------------------------
+#
+# Slide mode triggers analysis on perceptual-hash changes instead of motion
+# settling. dHash resizes the frame to 9x8 grayscale and compares adjacent
+# pixels — small lighting changes are absorbed; a new slide flips most bits.
+
+def _compute_dhash(frame: np.ndarray) -> int:
+    """64-bit difference hash of a frame (resized to 9×8 grayscale)."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(gray, (9, 8), interpolation=cv2.INTER_AREA)
+    bits = (small[:, 1:] > small[:, :-1]).flatten()
+    h = 0
+    for bit in bits:
+        h = (h << 1) | int(bit)
+    return h
+
+
+def _hamming(a: int, b: int) -> int:
+    """Number of differing bits between two 64-bit hashes."""
+    return bin(a ^ b).count("1")
+
+
 # ---- Camera worker -----------------------------------------------------------
 
 class CameraWorker:
@@ -727,9 +762,14 @@ class CameraWorker:
         self._started = False
         self._paused = False
 
+        # Capture mode (Pass 3): "board" = motion-diff trigger (existing);
+        # "slide" = perceptual-hash trigger over `_last_captured_hash`.
+        self._mode = "board"
+        self._last_captured_hash: Optional[int] = None
+
     # ---- lifecycle ----------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self, mode: str = "board") -> None:
         if self._started:
             return
         self._stop_evt.clear()
@@ -738,6 +778,8 @@ class CameraWorker:
         self._analyzing = False
         self._paused = False
         self._last_analysis_time = 0.0
+        self._mode = mode if mode in ("board", "slide") else "board"
+        self._last_captured_hash = None
 
         self._cap = cv2.VideoCapture(CAMERA_INDEX)
         if not self._cap.isOpened():
@@ -770,7 +812,10 @@ class CameraWorker:
         self._paused = True
 
     def resume(self) -> None:
-        """Resume board-change detection and auto-analysis."""
+        """Resume detection. In slide mode, clear the last-captured hash so
+        the first frame after resume is captured — the user has likely
+        advanced slides during the pause. Harmless no-op in board mode."""
+        self._last_captured_hash = None
         self._paused = False
 
     # ---- capture loop -------------------------------------------------------
@@ -794,24 +839,56 @@ class CameraWorker:
             with self._frame_lock:
                 self._latest_frame = frame
 
-            settled = self.detector.update(frame)
             now = time.time()
-
-            if now - self._last_meter_emit > METER_INTERVAL:
-                self._last_meter_emit = now
-                bus.broadcast({
-                    "type": "meter",
-                    "diff": round(self.detector.last_diff, 2),
-                    "threshold": round(self.detector.threshold, 2),
-                    "armed": bool(self.detector._was_changing),
-                })
-
-            if (settled
-                    and not self._analyzing
-                    and now - self._last_analysis_time > COOLDOWN_SECONDS):
-                self._launch_analysis(frame.copy())
+            if self._mode == "slide":
+                self._slide_step(frame, now)
+            else:
+                self._board_step(frame, now)
 
             time.sleep(0.03)
+
+    def _board_step(self, frame: np.ndarray, now: float) -> None:
+        """Motion-diff trigger (board mode): analyse when motion settles."""
+        settled = self.detector.update(frame)
+        if now - self._last_meter_emit > METER_INTERVAL:
+            self._last_meter_emit = now
+            bus.broadcast({
+                "type": "meter",
+                "mode": "board",
+                "diff": round(self.detector.last_diff, 2),
+                "threshold": round(self.detector.threshold, 2),
+                "armed": bool(self.detector._was_changing),
+            })
+        if (settled
+                and not self._analyzing
+                and now - self._last_analysis_time > COOLDOWN_SECONDS):
+            self._launch_analysis(frame.copy())
+
+    def _slide_step(self, frame: np.ndarray, now: float) -> None:
+        """Perceptual-hash trigger (slide mode): analyse on a new slide."""
+        h = _compute_dhash(frame)
+        if self._last_captured_hash is None:
+            # No baseline yet — treat as brand new so the first frame (or the
+            # first frame after a resume) gets captured.
+            dist = 64
+        else:
+            dist = _hamming(h, self._last_captured_hash)
+
+        if now - self._last_meter_emit > METER_INTERVAL:
+            self._last_meter_emit = now
+            bus.broadcast({
+                "type": "meter",
+                "mode": "slide",
+                "distance": int(min(dist, 64)),
+                "threshold": SLIDE_HASH_THRESHOLD,
+                "new_slide": dist > SLIDE_HASH_THRESHOLD,
+            })
+
+        if (dist > SLIDE_HASH_THRESHOLD
+                and not self._analyzing
+                and now - self._last_analysis_time > SLIDE_COOLDOWN_SECONDS):
+            self._last_captured_hash = h
+            self._launch_analysis(frame.copy())
 
     # ---- preview ------------------------------------------------------------
 
@@ -841,6 +918,10 @@ class CameraWorker:
             frame = None if self._latest_frame is None else self._latest_frame.copy()
         if frame is None:
             return False, "No frame yet…"
+        # In slide mode, set the hash so the cooldown doesn't lapse onto an
+        # identical frame and immediately auto-trigger again.
+        if self._mode == "slide":
+            self._last_captured_hash = _compute_dhash(frame)
         self._launch_analysis(frame)
         return True, "Analyzing…"
 
@@ -1492,13 +1573,17 @@ def start():
     if not name:
         return redirect(url_for("landing"))
 
+    mode = request.form.get("capture_mode", "board")
+    if mode not in ("board", "slide"):
+        mode = "board"
+
     # Cleanly tear down any prior session's workers before starting fresh.
     camera_worker.stop()
     audio_worker.stop()
 
-    state.session = Session(name)
+    state.session = Session(name, mode=mode)
     try:
-        camera_worker.start()
+        camera_worker.start(mode=mode)
     except Exception as exc:
         bus.broadcast({"type": "error", "text": f"Camera: {exc}"})
     audio_worker.start()  # broadcasts its own error if the mic is unavailable
@@ -1520,6 +1605,7 @@ def session_page():
         quiz=state.session.quiz,
         session_id=state.session.file_path.stem,
         paused=state.session.paused,
+        mode=state.session.mode,
     )
 
 
@@ -1766,6 +1852,7 @@ def history_session(class_name: str, filename: str):
         session_id=md_path.stem,
         history_mode=True,
         back_url=url_for("history"),
+        mode="board",
     )
 
 

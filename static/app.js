@@ -68,7 +68,7 @@ function setPanel(el, text) {
 }
 
 function updateMeter(diff, threshold, armed) {
-  meterBar.classList.remove("paused");
+  meterBar.classList.remove("paused", "new-slide");
   meterText.textContent = `${diff.toFixed(2)} / ${threshold.toFixed(2)} ${armed ? "[armed]" : "[idle]"}`;
   const fullScale = threshold * METER_FULL_SCALE_MULTIPLIER || 1;
   const pct = Math.min(100, (diff / fullScale) * 100);
@@ -81,8 +81,21 @@ function updateMeter(diff, threshold, armed) {
 function showPausedMeter() {
   meterText.textContent = "paused";
   meterBar.style.width = "100%";
-  meterBar.classList.remove("armed");
+  meterBar.classList.remove("armed", "new-slide");
   meterBar.classList.add("paused");
+}
+
+// Slide mode meter: hash distance from the last captured slide, with a
+// "new slide" highlight once we cross the trigger threshold.
+function updateSlideMeter(event) {
+  meterBar.classList.remove("paused", "armed");
+  meterBar.classList.toggle("new-slide", Boolean(event.new_slide));
+  const fullScale = (event.threshold * METER_FULL_SCALE_MULTIPLIER) || 1;
+  const pct = Math.min(100, (event.distance / fullScale) * 100);
+  meterBar.style.width = `${pct}%`;
+  meterText.textContent =
+    `${event.distance} / ${event.threshold} ${event.new_slide ? "[new slide]" : "[same slide]"}`;
+  meterThreshold.style.left = `${100 / METER_FULL_SCALE_MULTIPLIER}%`;
 }
 
 function addTranscript(label, text) {
@@ -120,6 +133,8 @@ function handleEvent(event) {
     case "meter":
       if (event.paused) {
         showPausedMeter();
+      } else if (event.mode === "slide") {
+        updateSlideMeter(event);
       } else {
         updateMeter(event.diff, event.threshold, event.armed);
       }
