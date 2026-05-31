@@ -322,6 +322,54 @@ def list_classes() -> list[str]:
     return sorted(d.name for d in SESSIONS_DIR.iterdir() if d.is_dir())
 
 
+def list_audio_devices() -> list[dict]:
+    """Available input devices for the landing-page picker.
+
+    Filters to devices with at least one input channel and flags whichever
+    sounddevice considers the current input default. Returns [] on any
+    enumeration failure so the picker just stays hidden.
+    """
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        return []
+    # sd.default.device is an _InputOutputPair (not a list/tuple), but it's
+    # subscript-accessible: index 0 is the input default. When unset it can be
+    # -1; in that case fall back to query_devices(kind="input").
+    default_in = -1
+    try:
+        default_in = int(sd.default.device[0])
+    except (TypeError, ValueError, IndexError, AttributeError):
+        pass
+    default_in_name: Optional[str] = None
+    if default_in < 0:
+        try:
+            di = sd.query_devices(kind="input")
+            if isinstance(di, dict):
+                default_in_name = di.get("name")
+        except Exception:
+            pass
+    out: list[dict] = []
+    matched_default = False
+    for i, d in enumerate(devices):
+        if d.get("max_input_channels", 0) <= 0:
+            continue
+        is_def = (i == default_in)
+        # Fall-back name match — only the first occurrence wins, in case two
+        # devices share a display name (USB hub on macOS often duplicates).
+        if (not is_def and not matched_default
+                and default_in_name and d.get("name") == default_in_name):
+            is_def = True
+        if is_def:
+            matched_default = True
+        out.append({
+            "index": i,
+            "name": d.get("name", f"Device {i}"),
+            "is_default": is_def,
+        })
+    return out
+
+
 # ---- Display helpers (Pass 2A) -----------------------------------------------
 #
 # Timestamps are stored as wall clock in the session markdown (reproducible),
@@ -346,6 +394,9 @@ MODE_RE = re.compile(r"\*\*Mode:\*\*\s*(Board|Slide)", re.IGNORECASE)
 # Inline marker appended by Session.append_mode_switch_marker on mid-session
 # toggle — its presence tells /history the session wasn't single-mode.
 MODE_SWITCH_RE = re.compile(r"switched to (Board|Slide) mode", re.IGNORECASE)
+# Audio input device written into the session markdown header (Pass 5).
+# Missing from pre-existing sessions; falls back to "System default".
+AUDIO_INPUT_RE = re.compile(r"\*\*Audio input:\*\*\s*([^\n]+)")
 
 
 def format_elapsed(total_seconds: float) -> str:
@@ -607,6 +658,9 @@ def session_metrics(md_path: Path, concept_store: Optional[dict]) -> dict:
     mode = mode_match.group(1).lower() if mode_match else "board"
     toggled = bool(MODE_SWITCH_RE.search(pre_quiz))
 
+    audio_match = AUDIO_INPUT_RE.search(text)
+    audio_input = audio_match.group(1).strip() if audio_match else "System default"
+
     return {
         "filename": md_path.name,
         "date": start.strftime("%Y-%m-%d %H:%M") if start else md_path.stem,
@@ -617,6 +671,7 @@ def session_metrics(md_path: Path, concept_store: Optional[dict]) -> dict:
         "has_quiz": "## Practice Quiz" in text,
         "mode": mode,
         "toggled": toggled,
+        "audio_input": audio_input,
     }
 
 
@@ -646,9 +701,15 @@ class Session:
     does not regenerate it.
     """
 
-    def __init__(self, class_name: str, mode: str = "board"):
+    def __init__(self, class_name: str, mode: str = "board",
+                 audio_device_index: Optional[int] = None,
+                 audio_device_name: str = "System default"):
         self.class_name = class_name
         self.mode = mode if mode in ("board", "slide") else "board"
+        # Audio input picker (Pass 5). None means "use whichever device
+        # sounddevice picks", which is the existing pre-Pass-5 behavior.
+        self.audio_device_index = audio_device_index
+        self.audio_device_name = audio_device_name or "System default"
         self.started_at = datetime.now()
         self.ended = False
         self.quiz: Optional[dict] = None
@@ -670,6 +731,7 @@ class Session:
             f"# Sentry Session — {class_name}\n\n"
             f"**Started:** {self.started_at:%Y-%m-%d %H:%M}\n\n"
             f"**Mode:** {mode_label}\n\n"
+            f"**Audio input:** {self.audio_device_name}\n\n"
             f"---\n\n"
         )
 
@@ -1086,13 +1148,21 @@ class AudioWorker:
         self._paused = False
         with self._lock:
             self._chunks = []
+        # Read the chosen input device from the session at stream-open time
+        # (Pass 5) — never cache it on the worker. None falls through to the
+        # system default, matching pre-Pass-5 behavior.
+        device = (state.session.audio_device_index
+                  if state.session is not None else None)
+        stream_kwargs = {
+            "samplerate": AUDIO_SAMPLE_RATE,
+            "channels": 1,
+            "dtype": "float32",
+            "callback": self._callback,
+        }
+        if device is not None:
+            stream_kwargs["device"] = device
         try:
-            self._stream = sd.InputStream(
-                samplerate=AUDIO_SAMPLE_RATE,
-                channels=1,
-                dtype="float32",
-                callback=self._callback,
-            )
+            self._stream = sd.InputStream(**stream_kwargs)
             self._stream.start()
         except Exception as exc:
             self._stream = None
@@ -1817,6 +1887,12 @@ def landing():
     return render_template("landing.html", classes=classes)
 
 
+@app.route("/audio_devices")
+def audio_devices():
+    """JSON list of input devices for the landing-page picker (Pass 5)."""
+    return jsonify(list_audio_devices())
+
+
 @app.route("/start", methods=["POST"])
 def start():
     """Begin a session tagged to a class, then hand off to the main page."""
@@ -1830,11 +1906,31 @@ def start():
     if mode not in ("board", "slide"):
         mode = "board"
 
+    # Resolve the optional audio_device selection against the live device list
+    # — a forged or stale index silently falls back to the system default.
+    audio_device_index: Optional[int] = None
+    audio_device_name = "System default"
+    raw_device = request.form.get("audio_device", "").strip()
+    if raw_device:
+        try:
+            idx = int(raw_device)
+            for dev in list_audio_devices():
+                if dev["index"] == idx:
+                    audio_device_index = idx
+                    audio_device_name = dev["name"]
+                    break
+        except ValueError:
+            pass
+
     # Cleanly tear down any prior session's workers before starting fresh.
     camera_worker.stop()
     audio_worker.stop()
 
-    state.session = Session(name, mode=mode)
+    state.session = Session(
+        name, mode=mode,
+        audio_device_index=audio_device_index,
+        audio_device_name=audio_device_name,
+    )
     try:
         camera_worker.start(mode=mode)
     except Exception as exc:
@@ -1859,6 +1955,7 @@ def session_page():
         session_id=state.session.file_path.stem,
         paused=state.session.paused,
         mode=state.session.mode,
+        audio_input=state.session.audio_device_name,
     )
 
 
@@ -2143,6 +2240,8 @@ def history_session(class_name: str, filename: str):
              or _start_from_filename(md_path.stem)
              or datetime.now())
     annotate_quiz(quiz, start, md_path.parent)
+    audio_match = AUDIO_INPUT_RE.search(md)
+    audio_input = audio_match.group(1).strip() if audio_match else "System default"
     return render_template(
         "index.html",
         class_name=name,
@@ -2151,6 +2250,7 @@ def history_session(class_name: str, filename: str):
         history_mode=True,
         back_url=url_for("history"),
         mode="board",
+        audio_input=audio_input,
     )
 
 

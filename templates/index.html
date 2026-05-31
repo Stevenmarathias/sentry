@@ -19,6 +19,9 @@
                   title="Switch capture mode">
             {{ '📊 Slide mode' if mode == 'slide' else '✏️ Board mode' }}
           </button>
+          <span class="audio-chip" title="Audio input device">
+            🎙️ {{ audio_input|default('System default') }}
+          </span>
         </div>
         <span id="status" class="status">Connecting…</span>
       </header>

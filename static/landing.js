@@ -22,6 +22,40 @@ async function postJSON(url, body) {
   }
 }
 
+// ---- Audio input picker (Pass 5) ------------------------------------------
+//
+// Each card's start-session form has a hidden <div class="audio-picker">. We
+// fetch the device list once at page load and populate every picker; if the
+// list is empty (or the request fails) the pickers stay hidden and /start
+// falls through to the system default.
+async function populateAudioDevices() {
+  let devices = [];
+  try {
+    const res = await fetch("/audio_devices");
+    if (res.ok) devices = await res.json();
+  } catch (err) {
+    return;  // leave every picker hidden
+  }
+  if (!Array.isArray(devices) || devices.length === 0) return;
+
+  document.querySelectorAll(".audio-device-select").forEach((sel) => {
+    sel.innerHTML = "";
+    let defaultIdx = -1;
+    devices.forEach((d, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(d.index);
+      opt.textContent = d.is_default ? `${d.name} (default)` : d.name;
+      sel.appendChild(opt);
+      if (d.is_default) defaultIdx = i;
+    });
+    if (defaultIdx >= 0) sel.selectedIndex = defaultIdx;
+    const wrap = sel.closest(".audio-picker");
+    if (wrap) wrap.hidden = false;
+  });
+}
+populateAudioDevices();
+
+
 // ---- New-class form -------------------------------------------------------
 
 const newToggle = document.getElementById("new-class-toggle");

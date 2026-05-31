@@ -92,6 +92,23 @@ header {
   border: 1px solid rgba(224, 161, 60, 0.35);
 }
 
+/* Read-only audio-device chip next to the mode toggle (Pass 5). Same shape
+   as a mode-board chip but display-only — no cursor, no hover affordance. */
+.audio-chip {
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  color: var(--muted);
+  background: rgba(138, 144, 156, 0.10);
+  border: 1px solid rgba(138, 144, 156, 0.30);
+  /* Truncate overlong device names rather than wrapping the header. */
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Slimmer variant used on /history rows */
 .mode-tag {
   font-size: 11px;
@@ -535,6 +552,26 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .mode-picker input[type="radio"] {
   accent-color: var(--accent);
+}
+
+/* Audio input picker — kept hidden until landing.js confirms devices exist.
+   Block layout means the `hidden` attribute works without a [hidden] override.
+   The <select> visual matches #new-class-form's text input. */
+.audio-picker-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.audio-device-select {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
 }
 
 /* ---- Kebab menu ---- */

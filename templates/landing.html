@@ -46,6 +46,10 @@
             <label><input type="radio" name="capture_mode" value="board" checked> ✏️ Board</label>
             <label><input type="radio" name="capture_mode" value="slide"> 📊 Slide</label>
           </div>
+          <div class="audio-picker" hidden>
+            <span class="audio-picker-label">Audio input</span>
+            <select name="audio_device" class="audio-device-select"></select>
+          </div>
           <button type="submit" class="primary">Start new session</button>
         </form>
       </article>
@@ -63,6 +67,10 @@
           <div class="mode-picker">
             <label><input type="radio" name="capture_mode" value="board" checked> ✏️ Board</label>
             <label><input type="radio" name="capture_mode" value="slide"> 📊 Slide</label>
+          </div>
+          <div class="audio-picker" hidden>
+            <span class="audio-picker-label">Audio input</span>
+            <select name="audio_device" class="audio-device-select"></select>
           </div>
           <button type="submit" class="primary">Start session</button>
         </form>
