@@ -2399,6 +2399,34 @@ def class_exam(class_name: str):
     return redirect(url_for("class_exam", class_name=name, ts=new_ts))
 
 
+@app.route("/class/<class_name>")
+def class_home(class_name: str):
+    """Per-class overview page (Pass 8).
+
+    This is the new home for every per-class action that used to live in
+    the landing-page kebab. It surfaces the four main things you can do
+    with a class — Start Session, browse Concepts, take a Practice Exam,
+    look at History — as obvious tiles rather than dropdown items.
+
+    Route order: `/class/<x>` is less specific than `/class/<x>/concepts`,
+    `/class/<x>/exam`, and `/class/<x>/concept/<...>`. Werkzeug routes by
+    pattern specificity (not source order), so the 3+ segment routes
+    always win for their URLs. This route only catches the exact 2-segment
+    `/class/<name>` URL.
+    """
+    name = sanitize_class_name(class_name)
+    if not name or not (SESSIONS_DIR / name).is_dir():
+        return redirect(url_for("landing"))
+    stats = class_overview(name)
+    return render_template(
+        "class_overview.html",
+        class_name=name,
+        session_count=stats["session_count"],
+        concept_count=stats["concept_count"],
+        latest=stats["latest"],
+    )
+
+
 @app.route("/class/<class_name>/concepts")
 def class_concepts(class_name: str):
     """Browse a class's accumulated concept memory (concepts.json) as a table."""

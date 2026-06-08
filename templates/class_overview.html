@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentry — {{ class_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div class="title-block">
+        <h1>Sentry</h1>
+        <span class="class-tag">{{ class_name }}</span>
+      </div>
+      <a class="link" href="{{ url_for('landing') }}">← Home</a>
+    </header>
+
+    <p class="class-stat-line">
+      {{ session_count }} session{{ '' if session_count == 1 else 's' }}
+      · {{ concept_count }} concept{{ '' if concept_count == 1 else 's' }}
+      {% if latest != '—' %} · last session {{ latest }}{% endif %}
+    </p>
+
+    {% if session_count == 0 %}
+    <p class="empty new-class-hint">
+      Brand new class — start your first session below.
+    </p>
+    {% endif %}
+
+    <!-- Hero action: start a fresh session for this class. Same form fields
+         the landing card used pre-Pass-8; submission still hits /start which
+         tags the session to this class and redirects to the live view. -->
+    <section class="start-card">
+      <h2 class="start-card-title">Start a new session</h2>
+
+      <form method="POST" action="{{ url_for('start') }}" class="start-form">
+        <input type="hidden" name="class_select" value="{{ class_name }}">
+
+        <div class="form-row">
+          <span class="form-label">Capture mode</span>
+          <div class="mode-picker">
+            <label><input type="radio" name="capture_mode" value="board" checked> ✏️ Board</label>
+            <label><input type="radio" name="capture_mode" value="slide"> 📊 Slide</label>
+          </div>
+        </div>
+
+        <div class="form-row audio-picker" hidden>
+          <span class="form-label">Audio input</span>
+          <select name="audio_device" class="audio-device-select"></select>
+        </div>
+
+        <button type="submit" class="primary start-btn">Start Session</button>
+      </form>
+    </section>
+
+    <p class="section-label">Browse</p>
+
+    <!-- Three secondary actions, each a glass tile that maps to an existing
+         route. The kebab on the landing page used to surface these via a
+         dropdown; Pass 8 promotes them to first-class navigation. -->
+    <nav class="action-grid">
+      <a class="action-tile"
+         href="{{ url_for('class_concepts', class_name=class_name) }}">
+        <span class="action-icon">📚</span>
+        <span class="action-name">Concepts</span>
+        <span class="action-meta">
+          Browse every concept this class has covered, with importance
+          scores and lecture-grounded explanations.
+        </span>
+      </a>
+      <a class="action-tile"
+         href="{{ url_for('class_exam', class_name=class_name) }}">
+        <span class="action-icon">📝</span>
+        <span class="action-name">Practice Exam</span>
+        <span class="action-meta">
+          Generate a 20-question exam covering this class's most important
+          concepts across every session.
+        </span>
+      </a>
+      <a class="action-tile"
+         href="{{ url_for('history') }}">
+        <span class="action-icon">📜</span>
+        <span class="action-name">History</span>
+        <span class="action-meta">
+          Past sessions — open one to revisit its transcript and quiz.
+        </span>
+      </a>
+    </nav>
+  </main>
+  <script src="{{ url_for('static', filename='class_overview.js') }}"></script>
+</body>
+</html>

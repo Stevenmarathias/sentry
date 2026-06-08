@@ -909,6 +909,30 @@ button.danger:hover {
   background: var(--glass-bg-hover);
   box-shadow: var(--glass-shadow-lift);
 }
+
+/* Pass 8: existing-class cards are whole-card clickable (navigate to the
+   per-class overview). The hint sits in the bottom corner and gently
+   shifts on hover — a quiet "this is interactive" affordance. */
+.class-card[data-class] { cursor: pointer; }
+.class-card[data-class]:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+.class-card-hint {
+  align-self: flex-end;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  transition: color var(--t-fast), transform var(--t-fast),
+              text-shadow var(--t-fast);
+  margin-top: auto;
+}
+.class-card[data-class]:hover .class-card-hint {
+  color: var(--accent-bright);
+  transform: translateX(2px);
+  text-shadow: 0 0 8px var(--accent-glow);
+}
 .class-card-head {
   display: flex;
   align-items: flex-start;
@@ -1420,6 +1444,148 @@ button.danger:hover {
 }
 
 /* ======================================================================
+   Per-class overview (Pass 8) — /class/<name>
+
+   One hero "Start Session" card (glass, the obvious primary action), a
+   compact stat line, and a 3-up grid of secondary action tiles
+   (Concepts / Practice Exam / History) that promote what used to be
+   buried in the landing-page kebab.
+   ====================================================================== */
+
+/* Stat line — mono, dense, sits right under the header. */
+.class-stat-line {
+  font-size: 13px;
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+.new-class-hint {
+  font-size: 14px;
+  /* `empty` already styles the italic muted treatment; this just gives
+     it a touch of breathing room. */
+  padding: 8px 0 0;
+}
+
+/* Hero Start-Session card — the page's primary affordance. Glass
+   surface, electric-blue title accent, big primary button at the
+   bottom. Lives just below the stat line. */
+.start-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 22px 20px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+  border-radius: var(--r-lg);
+  position: relative;
+}
+.start-card::before {
+  /* Subtle accent edge on the left to mark this as the primary action. */
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 18%;
+  bottom: 18%;
+  width: 2px;
+  background: linear-gradient(180deg,
+              transparent,
+              var(--accent-bright) 30%,
+              var(--accent) 70%,
+              transparent);
+  border-radius: 2px;
+  opacity: 0.8;
+}
+.start-card-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--text);
+}
+
+.start-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.form-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+/* The Start Session submit button — wider than a regular button so it
+   feels like the page's main action. */
+.start-btn {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  padding: 12px 26px;
+  font-size: 15px;
+  margin-top: 4px;
+}
+
+/* Secondary action grid — three glass tiles that mirror the kebab items
+   they replaced. Each tile is an anchor; whole tile is the click target. */
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+.action-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px 20px 22px;
+  text-decoration: none;
+  color: var(--text);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+  border-radius: var(--r-md);
+  transition: transform var(--t-base), box-shadow var(--t-base),
+              border-color var(--t-base), background var(--t-base);
+}
+.action-tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--glass-border-2);
+  background: var(--glass-bg-hover);
+  box-shadow: var(--glass-shadow-lift);
+}
+.action-icon {
+  font-size: 28px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.action-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  transition: color var(--t-fast), text-shadow var(--t-fast);
+}
+.action-tile:hover .action-name {
+  color: var(--accent-bright);
+  text-shadow: 0 0 8px var(--accent-glow);
+}
+.action-meta {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* ======================================================================
    Narrow screens — keep things readable, don't pretend to be responsive.
    ====================================================================== */
 
@@ -1434,6 +1600,8 @@ button.danger:hover {
   .concept-detail-name { font-size: 24px; }
   .concept-meta-cell { border-right: none; border-bottom: 1px solid var(--panel-border); padding-bottom: 8px; }
   .concept-meta-cell:last-child { border-bottom: none; padding-bottom: 4px; }
+  .action-grid { grid-template-columns: 1fr; }
+  .start-card { padding: 18px 18px 16px; }
 }
 
 /* Respect reduced-motion users. */

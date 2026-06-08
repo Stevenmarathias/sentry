@@ -21,16 +21,19 @@
       {% for c in classes %}
       <article class="panel class-card"
                data-class="{{ c.name }}"
-               data-sessions="{{ c.session_count }}">
+               data-sessions="{{ c.session_count }}"
+               tabindex="0"
+               role="button"
+               aria-label="Open {{ c.name }} overview">
         <div class="class-card-head">
           <h2 class="class-card-name">{{ c.name }}</h2>
+          <!-- Kebab menu (Pass 8): rename + delete only.
+               Concepts / History / Exam are now first-class buttons on
+               the per-class overview at /class/<name>. -->
           <div class="kebab-wrap">
             <button type="button" class="kebab-btn" aria-label="Class actions">⋮</button>
             <div class="kebab-menu" hidden>
               <button type="button" data-action="rename">Rename class</button>
-              <button type="button" data-action="exam">📝 Generate practice exam</button>
-              <button type="button" data-action="concepts">View concepts</button>
-              <button type="button" data-action="history">View history</button>
               <button type="button" data-action="delete" class="danger-item">Delete class</button>
             </div>
           </div>
@@ -40,21 +43,13 @@
           · {{ c.concept_count }} concept{{ '' if c.concept_count == 1 else 's' }}
           {% if c.latest != '—' %}<br>last session {{ c.latest }}{% endif %}
         </p>
-        <form method="POST" action="{{ url_for('start') }}">
-          <input type="hidden" name="class_select" value="{{ c.name }}">
-          <div class="mode-picker">
-            <label><input type="radio" name="capture_mode" value="board" checked> ✏️ Board</label>
-            <label><input type="radio" name="capture_mode" value="slide"> 📊 Slide</label>
-          </div>
-          <div class="audio-picker" hidden>
-            <span class="audio-picker-label">Audio input</span>
-            <select name="audio_device" class="audio-device-select"></select>
-          </div>
-          <button type="submit" class="primary">Start new session</button>
-        </form>
+        <span class="class-card-hint">Open →</span>
       </article>
       {% endfor %}
 
+      <!-- "Create new class" still does create-and-start inline. There's
+           nothing to navigate to before the class exists, so this card
+           keeps its inline form (mode + audio + Start). -->
       <article class="panel class-card new-class-card">
         <button type="button" id="new-class-toggle" class="add-class-btn">
           + Create new class
@@ -79,12 +74,9 @@
   </main>
 
   <script>
-    // url_for can't take a runtime class name; the JS substitutes __C__.
-    window.SENTRY_CONCEPTS_URL =
-      "{{ url_for('class_concepts', class_name='__C__') }}";
-    window.SENTRY_EXAM_URL =
-      "{{ url_for('class_exam', class_name='__C__') }}";
-    window.SENTRY_HISTORY_URL = "{{ url_for('history') }}";
+    // url_for can't take a runtime class name; landing.js substitutes __C__.
+    window.SENTRY_CLASS_HOME_URL =
+      "{{ url_for('class_home', class_name='__C__') }}";
   </script>
   <script src="{{ url_for('static', filename='landing.js') }}"></script>
 </body>

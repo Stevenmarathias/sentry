@@ -1,12 +1,9 @@
-// Sentry landing page: class cards, kebab menus, new-class form,
-// rename / delete actions.
+// Sentry landing page (Pass 8): class cards navigate to /class/<name>;
+// the kebab is now slim (rename + delete only); audio picker + Start
+// Session form live on the per-class overview page.
 
-function conceptsUrl(name) {
-  return window.SENTRY_CONCEPTS_URL.replace("__C__", encodeURIComponent(name));
-}
-
-function examUrl(name) {
-  return window.SENTRY_EXAM_URL.replace("__C__", encodeURIComponent(name));
+function classHomeUrl(name) {
+  return window.SENTRY_CLASS_HOME_URL.replace("__C__", encodeURIComponent(name));
 }
 
 async function postJSON(url, body) {
@@ -22,12 +19,11 @@ async function postJSON(url, body) {
   }
 }
 
-// ---- Audio input picker (Pass 5) ------------------------------------------
+// ---- Audio input picker (new-class form only) -----------------------------
 //
-// Each card's start-session form has a hidden <div class="audio-picker">. We
-// fetch the device list once at page load and populate every picker; if the
-// list is empty (or the request fails) the pickers stay hidden and /start
-// falls through to the system default.
+// The existing-class cards no longer have inline forms; only the
+// "Create new class" form on this page still has an audio-device <select>.
+// The per-class overview page has its own copy of this populate routine.
 async function populateAudioDevices() {
   let devices = [];
   try {
@@ -79,10 +75,35 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeAllMenus();
 });
 
-document.querySelectorAll(".class-card[data-class]").forEach((card) => {
+// ---- Class cards: whole-card click navigates to /class/<name> -------------
+//
+// The kebab keeps working independently because every click whose target
+// is inside `.kebab-wrap` early-returns from the card handler. The kebab
+// button itself also calls `stopPropagation` so it doesn't bubble up to
+// the card OR to the document-level "close menus" handler.
+
+function openClassHome(card) {
   const name = card.dataset.class;
+  if (name) window.location = classHomeUrl(name);
+}
+
+document.querySelectorAll(".class-card[data-class]").forEach((card) => {
   const kebab = card.querySelector(".kebab-btn");
   const menu = card.querySelector(".kebab-menu");
+
+  // Click anywhere outside the kebab area = open the class overview.
+  card.addEventListener("click", (e) => {
+    if (e.target.closest(".kebab-wrap")) return;
+    openClassHome(card);
+  });
+  // Keyboard equivalent for tabindex+role="button": Enter and Space.
+  card.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    if (e.target.closest(".kebab-wrap")) return;
+    e.preventDefault();
+    openClassHome(card);
+  });
+
   if (!kebab || !menu) return;
 
   kebab.addEventListener("click", (e) => {
@@ -91,24 +112,23 @@ document.querySelectorAll(".class-card[data-class]").forEach((card) => {
     closeAllMenus();
     menu.hidden = wasOpen;
   });
+  // Menu container swallows clicks so picking an item doesn't both close
+  // the menu via the document handler AND navigate via the card handler.
   menu.addEventListener("click", (e) => e.stopPropagation());
 
   menu.querySelectorAll("button[data-action]").forEach((btn) => {
     btn.addEventListener("click", () => {
       menu.hidden = true;
-      handleAction(btn.dataset.action, name, card);
+      handleAction(btn.dataset.action, card.dataset.class, card);
     });
   });
 });
 
 function handleAction(action, name, card) {
-  if (action === "concepts") {
-    window.location = conceptsUrl(name);
-  } else if (action === "history") {
-    window.location = window.SENTRY_HISTORY_URL;
-  } else if (action === "exam") {
-    window.location = examUrl(name);
-  } else if (action === "rename") {
+  // Pass 8: the kebab is rename + delete only. Concepts / History / Exam
+  // moved to the per-class overview page; their actions are no longer
+  // surfaced here.
+  if (action === "rename") {
     renameClass(name);
   } else if (action === "delete") {
     deleteClass(name, card);
