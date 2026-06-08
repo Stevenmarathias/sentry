@@ -30,6 +30,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 import cv2
 import numpy as np
@@ -2422,7 +2423,7 @@ def class_concepts(class_name: str):
     return render_template("concepts.html", class_name=name, concepts=concepts)
 
 
-@app.route("/class/<class_name>/concept/<concept_name>")
+@app.route("/class/<class_name>/concept/<path:concept_name>")
 def class_concept_detail(class_name: str, concept_name: str):
     """In-depth review of a single concept (Pass 7).
 
@@ -2430,6 +2431,12 @@ def class_concept_detail(class_name: str, concept_name: str):
     renders immediately; the "In depth" explanation is generated on demand
     via Claude and cached in `concept_explain_cache`, so a refresh or
     revisit is free.
+
+    `<path:>` (rather than the default `<string>`) is used so the converter
+    is maximally permissive about the concept-name segment: it accepts
+    slashes (some concept names contain "/"), keeps Werkzeug from being
+    fussy about uncommon characters, and avoids regressions on edge cases.
+    Any stray trailing slash is stripped below.
     """
     name = sanitize_class_name(class_name)
     class_dir = SESSIONS_DIR / name
@@ -2437,12 +2444,47 @@ def class_concept_detail(class_name: str, concept_name: str):
         return redirect(url_for("landing"))
 
     store = load_concepts(class_dir)
-    target = normalize_concept(concept_name)
-    concept = next(
-        (c for c in (store.get("concepts", []) if store else [])
-         if normalize_concept(c.get("name", "")) == target),
-        None,
-    )
+    concepts_list = store.get("concepts", []) if store else []
+
+    # Defense-in-depth lookup. Flask has already URL-decoded `concept_name`
+    # once, but a proxy or hand-typed URL can still double-encode (or leave
+    # a stray trailing slash from a copied link). We try the raw value and
+    # a second `unquote` pass through `normalize_concept`, and finally fall
+    # back to a punctuation-stripped match so a hand-typed URL missing
+    # apostrophes/commas/percents still lands on the right concept.
+    raw = (concept_name or "").strip().strip("/")
+    candidates = [raw]
+    decoded_again = unquote(raw)
+    if decoded_again != raw:
+        candidates.append(decoded_again)
+
+    concept = None
+    for cand in candidates:
+        target = normalize_concept(cand)
+        if not target:
+            continue
+        concept = next(
+            (c for c in concepts_list
+             if normalize_concept(c.get("name", "")) == target),
+            None,
+        )
+        if concept is not None:
+            break
+
+    if concept is None:
+        # Last-resort loose match: strip everything non-alphanumeric so
+        # "43% increased mortality risk" still matches "43 increased
+        # mortality risk" if someone typed a sloppy URL.
+        def _loose(s: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+        loose_target = _loose(decoded_again or raw)
+        if loose_target:
+            concept = next(
+                (c for c in concepts_list
+                 if _loose(c.get("name", "")) == loose_target),
+                None,
+            )
+
     if concept is None:
         # Unknown concept — fall back to the browser rather than 404'ing.
         return redirect(url_for("class_concepts", class_name=name))
@@ -2464,8 +2506,10 @@ def class_concept_detail(class_name: str, concept_name: str):
     first_occ = occurrences[0] if occurrences else {}
     last_occ = occurrences[-1] if occurrences else {}
 
-    # Pull (or generate-and-cache) the in-depth explanation.
-    cache_key = (name, target)
+    # Pull (or generate-and-cache) the in-depth explanation. Key off the
+    # matched concept's stored name (normalized) rather than the URL input,
+    # so the loose-match path and the exact-match path share a cache entry.
+    cache_key = (name, normalize_concept(concept.get("name", "")))
     cached = concept_explain_cache.get(cache_key)
     if cached is None:
         cached = generate_concept_explanation(name, concept)
