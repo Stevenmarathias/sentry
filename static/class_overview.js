@@ -1,8 +1,10 @@
-// Sentry per-class overview (Pass 8): populates the audio-device picker
-// on the Start Session form. The list is fetched from /audio_devices once
-// at page load; if it comes back empty (or the request fails) the picker
-// stays hidden and /start falls through to the system default — same
-// behaviour as on the landing page.
+// Sentry per-class overview (Pass 8 + Pass 11):
+//   - populates the audio-device picker on the Start Session form;
+//   - wires the per-class color picker so a change live-updates the
+//     page's --class-accent* custom properties AND persists to
+//     meta.json via POST /class/<name>/color.
+
+// ---- Audio input picker (Pass 8) ------------------------------------------
 
 async function populateAudioDevices() {
   let devices = [];
@@ -30,3 +32,73 @@ async function populateAudioDevices() {
   });
 }
 populateAudioDevices();
+
+
+// ---- Per-class color picker (Pass 11) -------------------------------------
+
+const colorInput = document.getElementById("class-color-input");
+const colorHex = document.getElementById("class-color-hex");
+const colorStatus = document.getElementById("class-color-status");
+const className = document.body.dataset.className || "";
+
+// Push a hex + its precomputed variants onto the live page so the themed
+// elements (.is-themed, .start-card.themed) update without a reload.
+function applyAccent(hex, variants) {
+  const body = document.body;
+  body.style.setProperty("--class-accent", hex);
+  if (variants) {
+    body.style.setProperty("--class-accent-soft", variants.soft);
+    body.style.setProperty("--class-accent-softer", variants.softer);
+    body.style.setProperty("--class-accent-border", variants.border);
+    body.style.setProperty("--class-accent-glow", variants.glow);
+  }
+  if (colorHex) colorHex.textContent = hex;
+}
+
+function flashStatus(text, isError) {
+  if (!colorStatus) return;
+  colorStatus.textContent = text;
+  colorStatus.classList.toggle("error", Boolean(isError));
+  colorStatus.hidden = false;
+  // Hide the status note after a beat so it doesn't linger.
+  clearTimeout(flashStatus._t);
+  flashStatus._t = setTimeout(() => { colorStatus.hidden = true; }, 1800);
+}
+
+if (colorInput && className) {
+  // Remember the last server-confirmed value so a failed save can revert.
+  let lastSaved = colorInput.value;
+
+  colorInput.addEventListener("change", async () => {
+    const next = colorInput.value;
+    // Update the visible hex + page accent optimistically so the picker
+    // feels instant; the server response then confirms or reverts.
+    if (colorHex) colorHex.textContent = next;
+    document.body.style.setProperty("--class-accent", next);
+
+    try {
+      const res = await fetch(
+        `/class/${encodeURIComponent(className)}/color`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ color: next }),
+        },
+      );
+      const data = await res.json();
+      if (data.ok) {
+        applyAccent(data.accent_color, data.variants);
+        lastSaved = data.accent_color;
+        flashStatus("Saved", false);
+      } else {
+        colorInput.value = lastSaved;
+        applyAccent(lastSaved);
+        flashStatus(data.error || "Could not save color.", true);
+      }
+    } catch (err) {
+      colorInput.value = lastSaved;
+      applyAccent(lastSaved);
+      flashStatus("Could not reach server.", true);
+    }
+  });
+}

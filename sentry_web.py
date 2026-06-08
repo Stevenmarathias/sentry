@@ -20,6 +20,7 @@ sentry.py; sentry.py is left untouched.
     ANTHROPIC_API_KEY=... .venv/bin/python sentry_web.py
     # then open http://127.0.0.1:5000
 """
+import hashlib
 import json
 import os
 import queue
@@ -1916,6 +1917,91 @@ camera_worker = CameraWorker()
 audio_worker = AudioWorker()
 
 
+# ---- Per-class accent color (Pass 11) ----------------------------------------
+#
+# Each class can have a custom hex accent stored in sessions/<class>/meta.json
+# (a separate file from concepts.json — that one is concept data, this is
+# presentation). Until the user picks one, the color is derived deterministically
+# from the class name so every class looks distinct from day one.
+
+HEX_COLOR_RE = re.compile(r"^#[0-9a-f]{6}$", re.IGNORECASE)
+
+
+def is_valid_hex_color(s: str) -> bool:
+    """True iff `s` is a strict `#RRGGBB` (no shorthand, no alpha)."""
+    return bool(s and HEX_COLOR_RE.match(s))
+
+
+def _hsl_to_hex(h: float, s: float, l: float) -> str:
+    """HSL (h in [0, 360], s/l in [0, 1]) -> '#rrggbb'. Standard formula."""
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs((h / 60) % 2 - 1))
+    m = l - c / 2
+    segment = int(h // 60) % 6
+    r, g, b = [
+        (c, x, 0), (x, c, 0), (0, c, x),
+        (0, x, c), (x, 0, c), (c, 0, x),
+    ][segment]
+    return "#{:02x}{:02x}{:02x}".format(
+        round((r + m) * 255),
+        round((g + m) * 255),
+        round((b + m) * 255),
+    )
+
+
+def derive_default_color(name: str) -> str:
+    """Stable, dark-bg-friendly hex color for a class name.
+
+    Hashes the normalized name into a hue, then picks HSL with saturation
+    and lightness tuned for the dark-glass surface. Same name in always
+    yields the same color out — perfect for migrations from pre-Pass-11.
+    """
+    digest = hashlib.sha256(name.lower().strip().encode("utf-8")).digest()
+    hue = digest[0] * 360 // 256
+    return _hsl_to_hex(hue, 0.70, 0.62)
+
+
+def color_variants(hex_color: str) -> dict:
+    """Precompute alpha-mixed variants of a hex so templates can emit
+    CSS custom properties without needing `color-mix()` in the browser."""
+    r, g, b = int(hex_color[1:3], 16), int(hex_color[3:5], 16), int(hex_color[5:7], 16)
+    return {
+        "hex":    hex_color,
+        "soft":   f"rgba({r}, {g}, {b}, 0.14)",
+        "softer": f"rgba({r}, {g}, {b}, 0.08)",
+        "border": f"rgba({r}, {g}, {b}, 0.50)",
+        "glow":   f"rgba({r}, {g}, {b}, 0.45)",
+    }
+
+
+def load_class_meta(class_dir: Path) -> dict:
+    """Read sessions/<class>/meta.json. Treats absence and corruption alike —
+    callers get an empty dict and continue with derived defaults."""
+    path = class_dir / "meta.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_class_meta(class_dir: Path, meta: dict) -> None:
+    """Write meta.json. Caller is responsible for class_dir existing."""
+    path = class_dir / "meta.json"
+    path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def get_class_accent_color(class_dir: Path, name: str) -> str:
+    """Persisted accent (lowercase hex) if stored and valid; otherwise the
+    deterministic default derived from the class name."""
+    stored = (load_class_meta(class_dir) or {}).get("accent_color", "")
+    if isinstance(stored, str) and is_valid_hex_color(stored):
+        return stored.lower()
+    return derive_default_color(name)
+
+
 def class_overview(name: str) -> dict:
     """Per-class summary card data for the landing page.
 
@@ -1924,6 +2010,8 @@ def class_overview(name: str) -> dict:
     depend on it. `latest_friendly` is Pass 10's landing-card date in
     "Mon D, YYYY" form (e.g. "Jun 2, 2026"); empty string when there's
     no session yet so the template can suppress the "Last used:" line.
+    `accent_color` (Pass 11) is the per-class hex used for the card's
+    left stripe on landing and the page-level theme on the overview.
     """
     class_dir = SESSIONS_DIR / name
     md_files = sorted(class_dir.glob("*.md")) if class_dir.is_dir() else []
@@ -1943,6 +2031,7 @@ def class_overview(name: str) -> dict:
         "concept_count": len(store.get("concepts", [])) if store else 0,
         "latest": latest,
         "latest_friendly": latest_friendly,
+        "accent_color": get_class_accent_color(class_dir, name),
     }
 
 
@@ -1988,9 +2077,18 @@ def _resume_session() -> None:
 
 @app.route("/")
 def landing():
-    """Class-selection landing screen — one card per class."""
+    """Class-selection landing screen — one card per class.
+
+    Pass 11 also computes aggregate totals for the hero strip — they sum
+    the per-class stats so there's exactly one source of truth.
+    """
     classes = [class_overview(n) for n in list_classes()]
-    return render_template("landing.html", classes=classes)
+    totals = {
+        "classes":  len(classes),
+        "sessions": sum(c["session_count"] for c in classes),
+        "concepts": sum(c["concept_count"] for c in classes),
+    }
+    return render_template("landing.html", classes=classes, totals=totals)
 
 
 @app.route("/audio_devices")
@@ -2437,7 +2535,40 @@ def class_home(class_name: str):
         session_count=stats["session_count"],
         concept_count=stats["concept_count"],
         latest=stats["latest"],
+        accent=color_variants(stats["accent_color"]),
     )
+
+
+@app.route("/class/<class_name>/color", methods=["POST"])
+def set_class_color(class_name: str):
+    """Pass 11: persist a per-class hex accent color into meta.json.
+
+    Accepts JSON `{"color": "#rrggbb"}`. Rejects malformed input. Returns
+    the saved color plus its precomputed CSS variants so the client can
+    update the page's CSS custom properties without a reload.
+    """
+    name = sanitize_class_name(class_name)
+    class_dir = SESSIONS_DIR / name
+    if not name or not class_dir.is_dir():
+        return jsonify({"ok": False, "error": "Class not found."}), 404
+
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("color") or "").strip()
+    if not is_valid_hex_color(raw):
+        return jsonify({
+            "ok": False,
+            "error": "Invalid color. Expected '#rrggbb'.",
+        }), 400
+
+    color = raw.lower()
+    meta = load_class_meta(class_dir)
+    meta["accent_color"] = color
+    save_class_meta(class_dir, meta)
+    return jsonify({
+        "ok": True,
+        "accent_color": color,
+        "variants": color_variants(color),
+    })
 
 
 @app.route("/class/<class_name>/concepts")

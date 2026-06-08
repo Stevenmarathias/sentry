@@ -6,12 +6,21 @@
   <title>Sentry — {{ class_name }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<!-- Pass 11: page-level theme. The body carries the class's accent as a
+     family of CSS custom properties so any element on the page can opt
+     into the per-class colour just by referencing the variables. -->
+<body class="themed-page"
+      data-class-name="{{ class_name }}"
+      style="--class-accent: {{ accent.hex }};
+             --class-accent-soft: {{ accent.soft }};
+             --class-accent-softer: {{ accent.softer }};
+             --class-accent-border: {{ accent.border }};
+             --class-accent-glow: {{ accent.glow }};">
   <main class="app">
     <header>
       <div class="title-block">
         <h1>Sentry</h1>
-        <span class="class-tag">{{ class_name }}</span>
+        <span class="class-tag is-themed">{{ class_name }}</span>
       </div>
       <a class="link" href="{{ url_for('landing') }}">← Home</a>
     </header>
@@ -31,7 +40,7 @@
     <!-- Hero action: start a fresh session for this class. Same form fields
          the landing card used pre-Pass-8; submission still hits /start which
          tags the session to this class and redirects to the live view. -->
-    <section class="start-card">
+    <section class="start-card themed">
       <h2 class="start-card-title">Start a new session</h2>
 
       <form method="POST" action="{{ url_for('start') }}" class="start-form">
@@ -87,6 +96,21 @@
         </span>
       </a>
     </nav>
+
+    <!-- Pass 11: per-class colour control. The native <input type="color">
+         carries the right semantics for free (keyboard picker, OS-native
+         palette). Live update happens via class_overview.js — no reload. -->
+    <section class="color-control">
+      <label class="color-control-label" for="class-color-input">Class color</label>
+      <div class="color-control-row">
+        <input type="color"
+               id="class-color-input"
+               value="{{ accent.hex }}"
+               aria-label="Class accent color">
+        <code class="color-control-hex" id="class-color-hex">{{ accent.hex }}</code>
+        <span class="color-control-status" id="class-color-status" hidden></span>
+      </div>
+    </section>
   </main>
   <script src="{{ url_for('static', filename='class_overview.js') }}"></script>
 </body>

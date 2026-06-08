@@ -8,31 +8,64 @@
 </head>
 <body>
   <main class="app">
-    <header>
-      <div class="title-block">
-        <h1>Sentry</h1>
+    <!-- Pass 11 hero: brand + tagline + aggregate stat strip, with the
+         "View past sessions" link kept top-right. The body's existing
+         radial-glow background gives this region depth — no new
+         heavy effects required. -->
+    <header class="landing-hero">
+      <div class="landing-hero-top">
+        <div class="hero-brand">
+          <h1 class="hero-title">Sentry</h1>
+          <p class="hero-tagline">
+            A study companion that knows your whole semester.
+          </p>
+        </div>
+        <a class="link" href="{{ url_for('history') }}">View past sessions →</a>
       </div>
-      <a class="link" href="{{ url_for('history') }}">View past sessions →</a>
+      <div class="landing-hero-stats">
+        <div class="hero-stat">
+          <span class="hero-stat-value">{{ totals.classes }}</span>
+          <span class="hero-stat-label">
+            {{ 'class' if totals.classes == 1 else 'classes' }}
+          </span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-value">{{ totals.sessions }}</span>
+          <span class="hero-stat-label">
+            {{ 'session' if totals.sessions == 1 else 'sessions' }}
+          </span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-value">{{ totals.concepts }}</span>
+          <span class="hero-stat-label">
+            {{ 'concept' if totals.concepts == 1 else 'concepts' }}
+          </span>
+        </div>
+      </div>
     </header>
 
     <p class="section-label">Your classes</p>
 
     <div class="class-grid">
       {% for c in classes %}
+      <!-- Each card carries its own accent color + a staggered entrance
+           delay. The stripe (::before) and animation pull from these
+           inline custom properties; CSS handles the rest. -->
       <article class="panel class-card"
                data-class="{{ c.name }}"
                data-sessions="{{ c.session_count }}"
                tabindex="0"
                role="button"
-               aria-label="Open {{ c.name }} overview">
+               aria-label="Open {{ c.name }} overview"
+               style="--card-stripe-color: {{ c.accent_color }};
+                      animation-delay: {{ loop.index0 * 60 }}ms;">
         <div class="class-card-head">
           <h2 class="class-card-name">
             <span class="class-card-name-text">{{ c.name }}</span>
             <span class="class-card-arrow" aria-hidden="true">→</span>
           </h2>
           <!-- Kebab menu (Pass 8): rename + delete only.
-               Concepts / History / Exam are now first-class buttons on
-               the per-class overview at /class/<name>. -->
+               Concepts / History / Exam / Color are on /class/<name>. -->
           <div class="kebab-wrap">
             <button type="button" class="kebab-btn" aria-label="Class actions">⋮</button>
             <div class="kebab-menu" hidden>
@@ -65,8 +98,10 @@
 
       <!-- "Create new class" still does create-and-start inline. There's
            nothing to navigate to before the class exists, so this card
-           keeps its inline form (mode + audio + Start). -->
-      <article class="panel class-card new-class-card">
+           keeps its inline form (mode + audio + Start). Sits at the end
+           of the staggered sequence. -->
+      <article class="panel class-card new-class-card"
+               style="animation-delay: {{ classes|length * 60 }}ms;">
         <button type="button" id="new-class-toggle" class="add-class-btn">
           + Create new class
         </button>

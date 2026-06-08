@@ -237,6 +237,16 @@ h1 {
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   box-shadow: inset 0 1px 0 rgba(93, 151, 255, 0.25);
+  transition: color var(--t-fast), background var(--t-fast),
+              border-color var(--t-fast);
+}
+/* Pass 11: themed variant picks up the page's per-class accent vars.
+   Falls back to brand blue when the vars aren't set (e.g. landing). */
+.class-tag.is-themed {
+  color: var(--class-accent, var(--accent-bright));
+  background: var(--class-accent-soft, var(--accent-soft));
+  border-color: var(--class-accent-border, rgba(47, 123, 255, 0.35));
+  box-shadow: inset 0 1px 0 var(--class-accent-soft, rgba(93, 151, 255, 0.25));
 }
 
 /* Capture-mode chip in the live view header (Pass 3) */
@@ -879,6 +889,79 @@ button.danger:hover {
 }
 
 /* ======================================================================
+   Landing hero (Pass 11) — big wordmark, tagline, aggregate stat strip
+
+   Sits above the class grid. Leans on the body's existing radial-glow
+   background for depth (no new heavy effects per spec). The "View past
+   sessions" link is parked top-right via flex space-between.
+   ====================================================================== */
+
+.landing-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 8px 0 4px;
+  /* Override the default page header layout — landing-hero uses its
+     own column stack, with the link tucked into landing-hero-top. */
+  align-items: stretch;
+  justify-content: flex-start;
+}
+.landing-hero-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.hero-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.hero-title {
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1;
+}
+.hero-tagline {
+  font-size: 14px;
+  color: var(--text-soft);
+  line-height: 1.5;
+  max-width: 56ch;
+}
+.landing-hero-stats {
+  display: flex;
+  gap: 36px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+.hero-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hero-stat-value {
+  font-size: 28px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  color: var(--accent-bright);
+  letter-spacing: -0.01em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.hero-stat-label {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+/* ======================================================================
    Landing page: class cards (Pass 9 — content-sized, tight grid)
 
    Two equal columns on desktop, one on narrow screens. Cards size to
@@ -900,12 +983,17 @@ button.danger:hover {
 
    Pass 10 padding bump: vertical stats need extra breathing room so the
    name + 3 stat lines never feel cramped. Inner gap stays small (8px)
-   so name and stat block read as one tight visual unit. */
+   so name and stat block read as one tight visual unit.
+
+   Pass 11: each card gets a left accent stripe (::before) coloured from
+   the inline `--card-stripe-color` custom property, plus a staggered
+   fade-up entrance animation. The animation-delay comes from an inline
+   style on the card so the cascade size is bounded by render order. */
 .class-card {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 18px 20px 20px;
+  padding: 18px 20px 20px 22px;     /* extra left to clear the stripe */
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   backdrop-filter: var(--glass-blur);
@@ -913,6 +1001,31 @@ button.danger:hover {
   box-shadow: var(--glass-shadow);
   transition: transform var(--t-base), box-shadow var(--t-base),
               border-color var(--t-base), background var(--t-base);
+  position: relative;
+  animation: class-card-rise 320ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+/* Only existing-class cards carry an accent stripe — the new-class
+   tile stays an honest dashed-outline affordance. */
+.class-card[data-class]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--card-stripe-color, var(--accent));
+  border-radius: var(--r-md) 0 0 var(--r-md);
+  transition: width var(--t-base), box-shadow var(--t-base);
+  pointer-events: none;             /* never intercept card clicks */
+}
+.class-card[data-class]:hover::before,
+.class-card[data-class]:focus-visible::before {
+  width: 5px;
+  box-shadow: 0 0 14px -2px var(--card-stripe-color, var(--accent));
+}
+@keyframes class-card-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
 }
 .class-card:hover {
   transform: translateY(-2px);
@@ -1536,7 +1649,9 @@ button.danger:hover {
   position: relative;
 }
 .start-card::before {
-  /* Subtle accent edge on the left to mark this as the primary action. */
+  /* Subtle accent edge on the left to mark this as the primary action.
+     Pass 11: picks up the class-level accent via `--class-accent`, with
+     the brand-blue gradient as a fallback when the page isn't themed. */
   content: "";
   position: absolute;
   left: 0;
@@ -1545,11 +1660,12 @@ button.danger:hover {
   width: 2px;
   background: linear-gradient(180deg,
               transparent,
-              var(--accent-bright) 30%,
-              var(--accent) 70%,
+              var(--class-accent, var(--accent-bright)) 30%,
+              var(--class-accent, var(--accent)) 70%,
               transparent);
   border-radius: 2px;
-  opacity: 0.8;
+  opacity: 0.85;
+  transition: background var(--t-fast);
 }
 .start-card-title {
   font-size: 18px;
@@ -1638,6 +1754,87 @@ button.danger:hover {
   line-height: 1.5;
 }
 
+/* Pass 11: per-class color picker — sits at the bottom of the overview
+   page. Native <input type="color"> for the actual picker (free a11y,
+   OS-native palette); a tiny mono hex readout + transient status note
+   sit beside it so changes feel acknowledged without a modal. */
+.color-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+.color-control-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.color-control-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+#class-color-input {
+  /* Strip the OS chrome around the swatch so it reads as a clean tile. */
+  appearance: none;
+  -webkit-appearance: none;
+  width: 44px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--panel-border-2);
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+#class-color-input:hover,
+#class-color-input:focus-visible {
+  border-color: var(--class-accent, var(--accent-bright));
+  box-shadow: 0 0 0 3px var(--class-accent-softer, var(--accent-softer));
+  outline: none;
+}
+/* The swatch itself (inner rendering) — different vendor prefixes. */
+#class-color-input::-webkit-color-swatch-wrapper { padding: 2px; }
+#class-color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+#class-color-input::-moz-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+.color-control-hex {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-soft);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+.color-control-status {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--correct);
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: rgba(52, 211, 156, 0.12);
+  border: 1px solid rgba(52, 211, 156, 0.30);
+}
+.color-control-status.error {
+  color: var(--error);
+  background: rgba(255, 107, 107, 0.12);
+  border-color: rgba(255, 107, 107, 0.30);
+}
+
 /* ======================================================================
    Narrow screens — keep things readable, don't pretend to be responsive.
    ====================================================================== */
@@ -1655,9 +1852,15 @@ button.danger:hover {
   .concept-meta-cell:last-child { border-bottom: none; padding-bottom: 4px; }
   .action-grid { grid-template-columns: 1fr; }
   .start-card { padding: 18px 18px 16px; }
+  .hero-title { font-size: 28px; }
+  .landing-hero-stats { gap: 24px; }
+  .hero-stat-value { font-size: 24px; }
 }
 
-/* Respect reduced-motion users. */
+/* Respect reduced-motion users. The global rule below zeroes out durations
+   so transitions land instantly; the explicit `.class-card` overrides also
+   skip the entrance animation entirely (a 0.01ms duration on a delayed
+   animation would still flash the card at opacity 0 until its delay hit). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1665,5 +1868,14 @@ button.danger:hover {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  .class-card {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .class-card:hover,
+  .class-card:focus-visible {
+    transform: none !important;
   }
 }
