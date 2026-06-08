@@ -1917,19 +1917,32 @@ audio_worker = AudioWorker()
 
 
 def class_overview(name: str) -> dict:
-    """Per-class summary card data for the landing page."""
+    """Per-class summary card data for the landing page.
+
+    `latest` stays in the canonical YYYY-MM-DD form (or "—") used by the
+    per-class overview's stat line — don't change its shape, other pages
+    depend on it. `latest_friendly` is Pass 10's landing-card date in
+    "Mon D, YYYY" form (e.g. "Jun 2, 2026"); empty string when there's
+    no session yet so the template can suppress the "Last used:" line.
+    """
     class_dir = SESSIONS_DIR / name
     md_files = sorted(class_dir.glob("*.md")) if class_dir.is_dir() else []
     store = load_concepts(class_dir)
     latest = "—"
+    latest_friendly = ""
     if md_files:
         start = _start_from_filename(md_files[-1].stem)
         latest = start.strftime("%Y-%m-%d") if start else md_files[-1].stem[:10]
+        if start:
+            # Build the day part manually so the output is portable —
+            # `%-d` is glibc-only, `%#d` is Windows-only.
+            latest_friendly = f"{start.strftime('%b')} {start.day}, {start.year}"
     return {
         "name": name,
         "session_count": len(md_files),
         "concept_count": len(store.get("concepts", [])) if store else 0,
         "latest": latest,
+        "latest_friendly": latest_friendly,
     }
 
 

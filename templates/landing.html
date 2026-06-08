@@ -41,15 +41,25 @@
             </div>
           </div>
         </div>
-        <p class="class-card-meta">
+        <!-- Pass 10: stats stacked vertically and muted so the class
+             name above is unambiguously the dominant element. A
+             never-used class collapses to a single "No sessions yet"
+             line — we don't pretend there's a last-used date. -->
+        <dl class="class-card-stats">
           {% if c.session_count == 0 %}
-            No sessions yet
+          <div class="class-card-stat empty-stat">No sessions yet</div>
           {% else %}
-            {{ c.session_count }} session{{ '' if c.session_count == 1 else 's' }} ·
-            {{ c.concept_count }} concept{{ '' if c.concept_count == 1 else 's' }}{% if c.latest != '—' %} ·
-            last {{ c.latest }}{% endif %}
+          <div class="class-card-stat">
+            {{ c.session_count }} session{{ '' if c.session_count == 1 else 's' }}
+          </div>
+          <div class="class-card-stat">
+            {{ c.concept_count }} concept{{ '' if c.concept_count == 1 else 's' }}
+          </div>
+          {% if c.latest_friendly %}
+          <div class="class-card-stat">Last used: {{ c.latest_friendly }}</div>
           {% endif %}
-        </p>
+          {% endif %}
+        </dl>
       </article>
       {% endfor %}
 

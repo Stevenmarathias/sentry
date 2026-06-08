@@ -896,12 +896,16 @@ button.danger:hover {
 }
 
 /* Override the solid .panel look for class cards — they're floating
-   interactive surfaces, so they get the glass treatment. */
+   interactive surfaces, so they get the glass treatment.
+
+   Pass 10 padding bump: vertical stats need extra breathing room so the
+   name + 3 stat lines never feel cramped. Inner gap stays small (8px)
+   so name and stat block read as one tight visual unit. */
 .class-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 16px 18px;
+  gap: 8px;
+  padding: 18px 20px 20px;
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   backdrop-filter: var(--glass-blur);
@@ -934,30 +938,31 @@ button.danger:hover {
   /* No bottom margin — the next sibling (.class-card-meta) gets the
      6px row gap from the parent flex column. */
 }
+/* Pass 10: the class name is the dominant element on the card —
+   noticeably larger and brighter than the stats below. The arrow
+   uses an em-relative size so it scales with the heading and stays
+   in proportion if the heading size is tuned later. */
 .class-card-name {
   flex: 1 1 auto;
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   text-transform: none;
   color: var(--text);
   word-break: break-word;
-  line-height: 1.25;
+  line-height: 1.2;
   min-width: 0;
 }
-/* Inline arrow is placed in the heading text-flow so it sits right
-   after the last word of the name — no absolute positioning, no
-   bottom-pinned hint. The trailing-space character before the arrow
-   keeps the spacing crisp regardless of font-feature settings. */
 .class-card-name-text { margin-right: 6px; }
 .class-card-arrow {
-  font-size: 18px;
+  font-size: 0.85em;       /* scales with the heading */
   font-weight: 500;
   color: var(--muted);
   transition: color var(--t-fast), transform var(--t-fast),
               text-shadow var(--t-fast);
   flex: 0 0 auto;
   line-height: 1;
+  display: inline-block;   /* lets transform animate cleanly */
 }
 .class-card[data-class]:hover .class-card-arrow,
 .class-card[data-class]:focus-visible .class-card-arrow {
@@ -965,13 +970,27 @@ button.danger:hover {
   transform: translateX(3px);
   text-shadow: 0 0 8px var(--accent-glow);
 }
-.class-card-meta {
-  font-size: 12px;
+
+/* Stacked stats — three short muted lines sit below the name and
+   visibly recede behind it (smaller, lower contrast, mono so the
+   numbers align). A <dl> for semantics; the inner <div>s are styled
+   as stat rows rather than dt/dd pairs because each stat is a single
+   string. */
+.class-card-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.class-card-stat {
+  font-size: 13px;
   color: var(--muted);
   font-family: var(--font-mono);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   line-height: 1.45;
-  /* No more `flex: 1` — the meta line is just text, not a spacer. */
+}
+.class-card-stat.empty-stat {
+  font-style: italic;
+  color: var(--muted-dim);
 }
 .class-card form {
   display: flex;
