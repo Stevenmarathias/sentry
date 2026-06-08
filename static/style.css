@@ -1,144 +1,346 @@
+/* ======================================================================
+   Sentry — dark glass visual system (Pass 6)
+
+   Aesthetic: sleek dark with an electric-blue accent and tasteful
+   liquid-glass surfaces. Guiding rule —
+       glass on floating UI, solid on reading surfaces
+   — because transcripts and quiz text must stay highly legible.
+
+   Layering:
+     · body: near-black base with two deep-blue radial glows that give
+       glass panels something with depth/colour to blur against.
+     · `.panel` is the solid reading surface (board analysis, transcript,
+       quiz cards, concept table, history rows).
+     · `.glass`-like treatments (header chips, kebab menus, audio picker,
+       class cards, mode picker, meter, the audio chip) are translucent
+       with backdrop-filter blur, a hairline edge highlight and soft shadow.
+   ====================================================================== */
+
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap");
+
 :root {
-  --bg: #16181d;
-  --panel: #1f232b;
-  --panel-border: #2d323d;
-  --text: #e6e8ec;
-  --muted: #8a909c;
-  --accent: #5b8def;
-  --armed: #e0a13c;
-  --error: #e0584c;
-  --correct: #4ade80;
-  --wrong: #f87171;
-  --partial: #facc15;
+  /* ---- Background ----
+     The base is nearly black with a deep-blue tint; two large radial
+     glows (one at the top of the viewport, one bottom-right) create the
+     ambient depth that glass surfaces need to read as glass. */
+  --bg-base:   #05070d;
+  --bg-tint:   #0a0f1f;
+  --bg-glow-1: rgba(47, 123, 255, 0.18);
+  --bg-glow-2: rgba(47, 123, 255, 0.07);
+
+  /* ---- Solid reading surfaces ----
+     High contrast, near-opaque. Used wherever long-form text lives. */
+  --panel:           #0c1220;
+  --panel-elev:      #121a2b;        /* hover / inset elements */
+  --panel-soft:      #0a0f1c;        /* slightly recessed (e.g. inputs) */
+  --panel-border:    rgba(255, 255, 255, 0.06);
+  --panel-border-2:  rgba(255, 255, 255, 0.10);
+
+  /* Back-compat alias — legacy `var(--bg)` callers keep working. */
+  --bg: var(--bg-base);
+
+  /* ---- Text ramp ---- */
+  --text:        #f1f4fb;            /* headings, primary body */
+  --text-soft:   #b0b7c8;            /* secondary body */
+  --muted:       #6e7689;            /* metadata / timestamps */
+  --muted-dim:   #4a5163;
+
+  /* ---- Accent: electric blue ---- */
+  --accent:        #2f7bff;
+  --accent-bright: #5d97ff;
+  --accent-deep:   #1f5fcc;
+  --accent-soft:   rgba(47, 123, 255, 0.16);
+  --accent-softer: rgba(47, 123, 255, 0.08);
+  --accent-glow:   rgba(47, 123, 255, 0.45);
+  --accent-ring:   rgba(93, 151, 255, 0.55);
+
+  /* ---- Semantic ---- */
+  --correct: #34d39c;
+  --wrong:   #ff6b6b;
+  --partial: #ffd166;
+  --armed:   #ffae3d;                /* "prior-lecture" badge + slide mode */
+  --error:   #ff6b6b;
+
+  /* ---- Glass tokens (floating UI only) ----
+     Layered shadow includes an inset top-edge hairline so the surface
+     reads as a real piece of glass catching light from above. */
+  --glass-bg:         rgba(255, 255, 255, 0.045);
+  --glass-bg-hover:   rgba(255, 255, 255, 0.085);
+  --glass-bg-active:  rgba(47, 123, 255, 0.16);
+  --glass-border:     rgba(255, 255, 255, 0.10);
+  --glass-border-2:   rgba(255, 255, 255, 0.18);
+  --glass-edge:       rgba(255, 255, 255, 0.22);
+  --glass-blur:       blur(18px) saturate(150%);
+  --glass-shadow:
+    inset 0 1px 0 var(--glass-edge),
+    0 8px 28px -10px rgba(0, 0, 0, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.32);
+  --glass-shadow-lift:
+    inset 0 1px 0 var(--glass-edge),
+    0 16px 40px -12px rgba(0, 0, 0, 0.65),
+    0 4px 14px rgba(47, 123, 255, 0.12);
+
+  /* ---- Type ---- */
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI",
+               system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ---- Motion ----
+     Subtle, never showy — this is a study tool. */
+  --t-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+  --t-base: 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  --t-slow: 280ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- Radii ---- */
+  --r-sm:   8px;
+  --r-md:   12px;
+  --r-lg:   16px;
+  --r-pill: 999px;
 }
+
+/* ======================================================================
+   Reset + base
+   ====================================================================== */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+html { color-scheme: dark; }
+
 body {
-  background: var(--bg);
+  background-color: var(--bg-base);
+  /* Two radial glows + a vertical gradient give the page real depth.
+     `background-attachment: fixed` keeps the glow stable while content
+     scrolls — important for the glass blur to feel grounded. */
+  background-image:
+    radial-gradient(ellipse 95% 65% at 50% -12%, var(--bg-glow-1), transparent 65%),
+    radial-gradient(ellipse 70% 50% at 92% 105%, var(--bg-glow-2), transparent 65%),
+    linear-gradient(180deg, var(--bg-tint) 0%, var(--bg-base) 720px);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  line-height: 1.5;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+  animation: page-in 320ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
 }
 
+/* Custom scrollbar for the dark theme (Webkit / Blink). */
+::-webkit-scrollbar           { width: 10px; height: 10px; }
+::-webkit-scrollbar-track     { background: transparent; }
+::-webkit-scrollbar-thumb     {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.16); }
+
+/* Keyboard focus — always electric blue, always visible. */
+:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ======================================================================
+   App shell
+   ====================================================================== */
+
 .app {
-  max-width: 720px;
+  max-width: 760px;
   margin: 0 auto;
-  padding: 20px 16px 40px;
+  padding: 32px 20px 64px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 22px;
 }
 
 header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
+  flex-wrap: wrap;
 }
 
 .title-block {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
-.class-tag {
-  font-size: 13px;
+h1 {
+  font-family: var(--font-sans);
+  font-size: 22px;
   font-weight: 500;
-  color: var(--accent);
-  background: rgba(91, 141, 239, 0.12);
-  border: 1px solid rgba(91, 141, 239, 0.35);
-  border-radius: 6px;
-  padding: 2px 8px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+/* Status text (right-aligned in header). */
+.status {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  text-align: right;
+  text-transform: lowercase;
+  position: relative;
+  padding-left: 14px;
+}
+.status::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+.status.error          { color: var(--error); }
+.status.error::before  { background: var(--error); box-shadow: 0 0 8px rgba(255, 107, 107, 0.5); }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* ======================================================================
+   Chips: class tag, mode badge, audio chip — glass pills floating
+   alongside the brand mark in the live-view header. This is the hero
+   glass moment.
+   ====================================================================== */
+
+.class-tag {
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  color: var(--accent-bright);
+  background: var(--accent-soft);
+  border: 1px solid rgba(47, 123, 255, 0.35);
+  border-radius: var(--r-pill);
+  padding: 4px 11px;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: inset 0 1px 0 rgba(93, 151, 255, 0.25);
 }
 
 /* Capture-mode chip in the live view header (Pass 3) */
 .mode-badge {
   font-size: 12px;
   font-weight: 500;
-  border-radius: 6px;
-  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  padding: 4px 11px;
   white-space: nowrap;
-  /* Keep the chip compact when it's rendered as a <button> (a flex item that
-     would otherwise pick up the global `button { flex: 1 }` and stretch). */
+  /* Keep the chip compact when it's rendered as a <button> (a flex item
+     that would otherwise pick up the global `button { flex: 1 }` and
+     stretch to fill the row). */
   flex: 0 0 auto;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+  transition: background var(--t-fast), border-color var(--t-fast),
+              transform var(--t-fast), filter var(--t-fast);
 }
 
-/* Interactive form: clicking flips Board <-> Slide mid-session. The hover
-   icon (Pass 3.1) appears on hover so the affordance is discoverable but
-   the chip stays quiet at rest. */
+/* Interactive form: clicking flips Board <-> Slide mid-session. The
+   hover icon (Pass 3.1) appears on hover so the affordance is
+   discoverable but the chip stays quiet at rest. */
 #mode-toggle {
   cursor: pointer;
-  transition: filter 0.15s ease;
 }
 #mode-toggle::after {
   content: " ↔";
   margin-left: 2px;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--t-fast);
 }
-#mode-toggle:hover { filter: brightness(1.15); }
-#mode-toggle:hover::after { opacity: 0.75; }
-#mode-toggle:disabled { opacity: 0.6; cursor: default; }
+#mode-toggle:hover {
+  background: var(--glass-bg-hover);
+  border-color: var(--glass-border-2);
+  filter: brightness(1.1);
+}
+#mode-toggle:hover::after { opacity: 0.85; }
+#mode-toggle:disabled { opacity: 0.55; cursor: default; }
 .mode-badge.mode-board {
-  color: var(--muted);
-  background: rgba(138, 144, 156, 0.10);
-  border: 1px solid rgba(138, 144, 156, 0.30);
+  color: var(--text-soft);
 }
 .mode-badge.mode-slide {
   color: var(--armed);
-  background: rgba(224, 161, 60, 0.12);
-  border: 1px solid rgba(224, 161, 60, 0.35);
+  background: rgba(255, 174, 61, 0.10);
+  border-color: rgba(255, 174, 61, 0.40);
+  box-shadow: inset 0 1px 0 rgba(255, 174, 61, 0.25),
+              0 4px 18px -6px rgba(255, 174, 61, 0.25);
 }
 
-/* Read-only audio-device chip next to the mode toggle (Pass 5). Same shape
-   as a mode-board chip but display-only — no cursor, no hover affordance. */
+/* Read-only audio-device chip next to the mode toggle (Pass 5). Same
+   glass-pill shape as the mode-board chip but display-only — no cursor,
+   no hover affordance. */
 .audio-chip {
   font-size: 12px;
   font-weight: 500;
-  border-radius: 6px;
-  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  padding: 4px 11px;
   white-space: nowrap;
-  color: var(--muted);
-  background: rgba(138, 144, 156, 0.10);
-  border: 1px solid rgba(138, 144, 156, 0.30);
+  color: var(--text-soft);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
   /* Truncate overlong device names rather than wrapping the header. */
-  max-width: 14em;
+  max-width: 16em;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Slimmer variant used on /history rows */
+/* Slimmer variant used on /history rows. */
 .mode-tag {
+  display: inline-flex;
+  align-items: center;
   font-size: 11px;
-  border-radius: 5px;
-  padding: 1px 6px;
-  border: 1px solid var(--panel-border);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border-radius: var(--r-pill);
+  padding: 2px 9px;
+  border: 1px solid var(--panel-border-2);
+  color: var(--text-soft);
 }
 .mode-tag.mode-slide {
   color: var(--armed);
-  border-color: rgba(224, 161, 60, 0.35);
+  border-color: rgba(255, 174, 61, 0.40);
+  background: rgba(255, 174, 61, 0.08);
 }
 
-h1 {
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-.status {
-  font-size: 13px;
-  color: var(--muted);
-  text-align: right;
-}
-.status.error { color: var(--error); }
+/* ======================================================================
+   Camera preview + meter (live view)
+   ====================================================================== */
 
 .preview {
   background: #000;
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   overflow: hidden;
   line-height: 0;
+  border: 1px solid var(--panel-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 18px 50px -20px rgba(0, 0, 0, 0.7);
 }
 .preview img {
   width: 100%;
@@ -146,93 +348,168 @@ h1 {
   display: block;
 }
 
+.meter {
+  /* Floating glass strip under the preview — same surface language as
+     the header chips. */
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
 .meter-labels {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
+#meter-text { color: var(--text-soft); }
 
 .meter-track {
   position: relative;
   height: 8px;
-  background: var(--panel);
+  background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--panel-border);
-  border-radius: 5px;
+  border-radius: var(--r-pill);
   overflow: hidden;
 }
 .meter-bar {
   height: 100%;
   width: 0%;
-  background: var(--accent);
-  transition: width 0.2s ease, background 0.2s ease;
+  background: linear-gradient(90deg, var(--accent-deep), var(--accent-bright));
+  box-shadow: 0 0 12px var(--accent-glow);
+  transition: width var(--t-base), background var(--t-base);
 }
-.meter-bar.armed { background: var(--armed); }
-.meter-bar.paused { background: var(--muted); }
-.meter-bar.new-slide { background: var(--correct); }
+.meter-bar.armed {
+  background: linear-gradient(90deg, #c97a1d, var(--armed));
+  box-shadow: 0 0 12px rgba(255, 174, 61, 0.5);
+}
+.meter-bar.paused {
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: none;
+}
+.meter-bar.new-slide {
+  background: linear-gradient(90deg, #1e9b6e, var(--correct));
+  box-shadow: 0 0 12px rgba(52, 211, 156, 0.5);
+}
 .meter-threshold {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
+  top: -3px;
+  bottom: -3px;
   width: 2px;
-  background: var(--text);
-  opacity: 0.6;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 1px;
 }
+
+/* ======================================================================
+   Buttons
+   Primary  = electric blue solid
+   default  = glass pill with hairline edge
+   danger   = subdued red
+   ====================================================================== */
 
 .controls {
   display: flex;
-  gap: 8px;
+  gap: 10px;
 }
 
 button {
   flex: 1;
-  padding: 10px 14px;
+  padding: 11px 16px;
   font-size: 14px;
   font-weight: 500;
+  font-family: var(--font-sans);
   color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-sm);
   cursor: pointer;
-  transition: background 0.15s ease, opacity 0.15s ease;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+  transition: background var(--t-fast), border-color var(--t-fast),
+              transform var(--t-fast), color var(--t-fast),
+              box-shadow var(--t-fast), filter var(--t-fast);
+  letter-spacing: 0.005em;
 }
-button:hover { background: #272c36; }
+button:hover {
+  background: var(--glass-bg-hover);
+  border-color: var(--glass-border-2);
+}
+button:active { transform: translateY(0.5px); filter: brightness(0.95); }
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  filter: saturate(0.6);
+}
+button:disabled:hover { background: var(--glass-bg); }
+
 button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
   color: #fff;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+  border-color: var(--accent-bright);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 8px 24px -8px var(--accent-glow),
+    0 1px 0 var(--accent-deep);
 }
-button.primary:hover { background: #4f7fe0; }
+button.primary:hover {
+  background: linear-gradient(180deg, #7aacff, var(--accent-bright));
+  filter: brightness(1.05);
+}
+button.primary:disabled {
+  background: linear-gradient(180deg, var(--accent-deep), #173f8e);
+  opacity: 0.55;
+}
+
 button.danger {
   color: var(--error);
-  border-color: rgba(224, 88, 76, 0.4);
+  border-color: rgba(255, 107, 107, 0.30);
+  background: rgba(255, 107, 107, 0.04);
 }
-button.danger:hover { background: rgba(224, 88, 76, 0.12); }
-button:disabled { opacity: 0.5; cursor: default; }
+button.danger:hover {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: rgba(255, 107, 107, 0.50);
+}
+
+/* ======================================================================
+   Panels: solid reading surfaces
+   ====================================================================== */
 
 .panels {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .panel {
   background: var(--panel);
   border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  padding: 12px 14px;
+  border-radius: var(--r-md);
+  padding: 18px 20px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
 }
 .panel h2 {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.12em;
   color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 .panel p {
   font-size: 15px;
+  color: var(--text);
+  line-height: 1.6;
 }
 .panel p.empty {
   color: var(--muted);
@@ -246,209 +523,300 @@ button:disabled { opacity: 0.5; cursor: default; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  padding-right: 4px;
 }
 .transcript-line {
   font-size: 14px;
+  color: var(--text);
+  line-height: 1.55;
 }
 .transcript-line .ts {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  margin-right: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-right: 6px;
 }
 .transcript-pause {
   font-size: 13px;
   font-style: italic;
   color: var(--muted);
+  padding: 2px 0;
 }
 
-/* ---- View containers ---- */
+/* ======================================================================
+   View containers — live vs quiz swap
+   ====================================================================== */
 
 #live-view,
 #quiz-view {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 22px;
 }
-/* `display: flex` above would otherwise override `[hidden]`, so the inactive
-   view (live vs. quiz) would never actually be hidden. */
+/* `display: flex` above would otherwise override `[hidden]`, so the
+   inactive view (live vs. quiz) would never actually be hidden. */
 #live-view[hidden],
 #quiz-view[hidden] { display: none; }
 
-/* ---- Quiz view ---- */
+/* ======================================================================
+   Quiz view
+   ====================================================================== */
 
-#back-btn {
-  flex: 0 0 auto;
-}
+#back-btn { flex: 0 0 auto; }
 
 /* Quiz-view header actions: Download as PDF + Back to lecture */
 .quiz-actions {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   flex: 0 0 auto;
 }
-.quiz-actions button {
-  flex: 0 0 auto;
-}
+.quiz-actions button { flex: 0 0 auto; }
 
 .quiz-heading {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--muted);
-  margin-bottom: -8px;
+  letter-spacing: 0.16em;
+  color: var(--accent-bright);
+  margin-bottom: -6px;
 }
 
 /* Subtitle line shown under the heading for /class/<n>/exam (Pass 4). */
 .exam-meta {
   font-size: 13px;
   color: var(--muted);
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .summary-banner {
-  background: rgba(91, 141, 239, 0.12);
-  border: 1px solid rgba(91, 141, 239, 0.4);
-  border-radius: 10px;
-  padding: 12px 14px;
+  background:
+    linear-gradient(180deg, rgba(47, 123, 255, 0.18), rgba(47, 123, 255, 0.08));
+  border: 1px solid rgba(93, 151, 255, 0.45);
+  border-radius: var(--r-md);
+  padding: 14px 18px;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
   text-align: center;
+  color: var(--text);
+  box-shadow:
+    inset 0 1px 0 rgba(93, 151, 255, 0.30),
+    0 10px 30px -10px var(--accent-glow);
 }
 
 #quiz-cards {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
+/* Quiz card = panel with a tappable feel.
+   Each card has the type label up top, the question body in high-
+   contrast text, the input zone, and a slide-in explanation slot. */
+.quiz-card {
+  position: relative;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
 .quiz-card .q-number {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--muted);
-  margin-bottom: 6px;
+  letter-spacing: 0.14em;
+  color: var(--accent-bright);
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
 }
 .quiz-card .q-text {
-  font-size: 15px;
-  margin-bottom: 12px;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text);
+  margin-bottom: 16px;
 }
 
-/* Recurring-concept questions (carried over from earlier lectures) */
+/* Recurring-concept questions (carried over from earlier lectures). */
 .recurring-badge {
   display: inline-block;
-  margin-bottom: 10px;
-  padding: 3px 10px;
-  border-radius: 6px;
+  margin-bottom: 12px;
+  padding: 4px 11px;
+  border-radius: var(--r-pill);
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--armed);
-  background: rgba(224, 161, 60, 0.14);
-  border: 1px solid rgba(224, 161, 60, 0.4);
+  background: rgba(255, 174, 61, 0.10);
+  border: 1px solid rgba(255, 174, 61, 0.40);
+  box-shadow: inset 0 1px 0 rgba(255, 174, 61, 0.25);
 }
 
-/* MCQ choices */
+/* MCQ choices — each a distinct tappable card with crisp hover/answer
+   states. Note that .choice-btn is a <button>, so it inherits the global
+   button styling above; we override what differs. */
 .choices {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 .choice-btn {
+  flex: 0 0 auto;
   text-align: left;
-  background: var(--bg);
+  padding: 12px 14px;
+  font-size: 14px;
+  background: var(--panel-soft);
+  border: 1px solid var(--panel-border-2);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  color: var(--text);
+  position: relative;
+  padding-left: 38px;
 }
+.choice-btn::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--panel-border-2);
+  background: transparent;
+  transition: border-color var(--t-fast), background var(--t-fast),
+              box-shadow var(--t-fast);
+}
+.choice-btn:hover {
+  background: var(--panel-elev);
+  border-color: var(--accent-bright);
+}
+.choice-btn:hover::before { border-color: var(--accent-bright); }
 .choice-btn:disabled {
-  opacity: 1;  /* keep correct/wrong colors vivid after answering */
+  opacity: 1;            /* keep correct/wrong colors vivid after answering */
   cursor: default;
+  filter: none;
 }
 .choice-btn.correct {
   border-color: var(--correct);
-  background: rgba(74, 222, 128, 0.14);
+  background: rgba(52, 211, 156, 0.10);
   color: var(--correct);
+  box-shadow: 0 0 0 1px rgba(52, 211, 156, 0.20) inset,
+              0 4px 18px -8px rgba(52, 211, 156, 0.35);
+}
+.choice-btn.correct::before {
+  border-color: var(--correct);
+  background: var(--correct);
+  box-shadow: 0 0 0 3px rgba(52, 211, 156, 0.18);
 }
 .choice-btn.wrong {
   border-color: var(--wrong);
-  background: rgba(248, 113, 113, 0.14);
+  background: rgba(255, 107, 107, 0.10);
   color: var(--wrong);
+}
+.choice-btn.wrong::before {
+  border-color: var(--wrong);
+  background: var(--wrong);
 }
 
 /* Fill-blank + short-answer inputs */
 .answer-row {
   display: flex;
-  gap: 8px;
+  gap: 10px;
 }
 .answer-input,
 .answer-textarea {
   width: 100%;
-  padding: 9px 11px;
+  padding: 11px 13px;
   font-size: 14px;
   font-family: inherit;
   color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  background: var(--panel-soft);
+  border: 1px solid var(--panel-border-2);
+  border-radius: var(--r-sm);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast),
+              background var(--t-fast);
 }
+.answer-input:focus,
+.answer-textarea:focus {
+  outline: none;
+  border-color: var(--accent-bright);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--panel);
+}
+.answer-input::placeholder,
+.answer-textarea::placeholder { color: var(--muted-dim); }
 .answer-input { flex: 1; }
-.answer-input.correct { border-color: var(--correct); }
-.answer-input.wrong { border-color: var(--wrong); }
-.answer-textarea { resize: vertical; }
+.answer-input.correct {
+  border-color: var(--correct);
+  box-shadow: 0 0 0 3px rgba(52, 211, 156, 0.18);
+}
+.answer-input.wrong {
+  border-color: var(--wrong);
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
+}
+.answer-textarea {
+  resize: vertical;
+  line-height: 1.55;
+  min-height: 96px;
+}
 .check-btn { flex: 0 0 auto; }
 .grade-btn {
   flex: 0 0 auto;
   align-self: flex-start;
-  margin-top: 8px;
-  padding-left: 18px;
-  padding-right: 18px;
+  margin-top: 12px;
+  padding-left: 22px;
+  padding-right: 22px;
 }
 
 /* Short-answer verdict badge */
 .verdict {
   display: inline-block;
-  margin-left: 10px;
-  padding: 3px 10px;
-  border-radius: 6px;
-  font-size: 12px;
+  margin-left: 12px;
+  padding: 4px 11px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.10em;
+  border: 1px solid transparent;
 }
-.verdict-correct { background: rgba(74, 222, 128, 0.16); color: var(--correct); }
-.verdict-partial { background: rgba(250, 204, 21, 0.16); color: var(--partial); }
-.verdict-incorrect { background: rgba(248, 113, 113, 0.16); color: var(--wrong); }
+.verdict-correct   { background: rgba(52, 211, 156, 0.14); color: var(--correct); border-color: rgba(52, 211, 156, 0.35); }
+.verdict-partial   { background: rgba(255, 209, 102, 0.14); color: var(--partial); border-color: rgba(255, 209, 102, 0.35); }
+.verdict-incorrect { background: rgba(255, 107, 107, 0.14); color: var(--wrong);   border-color: rgba(255, 107, 107, 0.35); }
 
 /* Explanation — slides in after a question is answered */
 .q-explanation {
   max-height: 0;
   margin-top: 0;
-  padding: 0 12px;
+  padding: 0 14px;
   overflow: hidden;
   opacity: 0;
   font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-soft);
   white-space: pre-wrap;
-  background: var(--bg);
-  border-left: 3px solid var(--panel-border);
-  border-radius: 6px;
-  transition: max-height 0.25s ease, opacity 0.25s ease,
-              margin-top 0.25s ease, padding 0.25s ease;
+  background: var(--panel-soft);
+  border-left: 3px solid var(--panel-border-2);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  transition: max-height var(--t-slow), opacity var(--t-slow),
+              margin-top var(--t-slow), padding var(--t-slow);
 }
 .q-explanation.show {
-  max-height: 600px;
-  margin-top: 12px;
-  padding: 10px 12px;
+  max-height: 800px;
+  margin-top: 14px;
+  padding: 12px 14px;
   opacity: 1;
 }
-.q-explanation.tone-correct { border-left-color: var(--correct); }
-.q-explanation.tone-partial { border-left-color: var(--partial); }
+.q-explanation.tone-correct   { border-left-color: var(--correct); }
+.q-explanation.tone-partial   { border-left-color: var(--partial); }
 .q-explanation.tone-incorrect { border-left-color: var(--wrong); }
 
 .q-source {
-  margin-top: 12px;
-  font-size: 12px;
-  font-style: italic;
+  margin-top: 14px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  font-style: normal;
   color: var(--muted);
 }
 
@@ -460,57 +828,86 @@ button:disabled { opacity: 0.5; cursor: default; }
   letter-spacing: 0;
   color: var(--muted);
   font-size: 11px;
+  font-family: var(--font-mono);
 }
 
 /* ---- Badge legend (quiz view) ---- */
 
 .badge-legend {
-  margin-top: 12px;
+  margin-top: 8px;
   font-size: 13px;
   color: var(--muted);
+  line-height: 1.55;
 }
 .badge-legend strong {
   color: var(--armed);
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
-/* ---- Shared page furniture ---- */
+/* ======================================================================
+   Shared page furniture
+   ====================================================================== */
 
 .link {
   font-size: 13px;
-  color: var(--accent);
+  color: var(--accent-bright);
   text-decoration: none;
   white-space: nowrap;
+  transition: color var(--t-fast), text-shadow var(--t-fast);
+  font-weight: 500;
 }
-.link:hover { text-decoration: underline; }
+.link:hover {
+  color: #9bbcff;
+  text-shadow: 0 0 8px rgba(93, 151, 255, 0.4);
+}
 
 .section-label {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.14em;
   color: var(--muted);
+  font-family: var(--font-mono);
 }
 
 .page-head-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
 }
 
-/* ---- Landing page: class cards ---- */
+/* ======================================================================
+   Landing page: class cards (glass with hover lift)
+   ====================================================================== */
 
 .class-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
 }
 
+/* Override the solid .panel look for class cards — they're floating
+   interactive surfaces, so they get the glass treatment. */
 .class-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  padding: 18px 18px 16px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+  transition: transform var(--t-base), box-shadow var(--t-base),
+              border-color var(--t-base), background var(--t-base);
+}
+.class-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--glass-border-2);
+  background: var(--glass-bg-hover);
+  box-shadow: var(--glass-shadow-lift);
 }
 .class-card-head {
   display: flex;
@@ -519,87 +916,133 @@ button:disabled { opacity: 0.5; cursor: default; }
   gap: 8px;
 }
 .class-card-name {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
+  letter-spacing: -0.005em;
   text-transform: none;
-  letter-spacing: 0;
   color: var(--text);
   word-break: break-word;
+  line-height: 1.3;
 }
 .class-card-meta {
   font-size: 13px;
   color: var(--muted);
   flex: 1;
+  line-height: 1.5;
 }
 .class-card form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 /* Board/Slide radio row inside each card's start-session form (Pass 3) */
 .mode-picker {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-soft);
+  padding: 6px 0 2px;
 }
 .mode-picker label {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   cursor: pointer;
+  transition: color var(--t-fast);
 }
+.mode-picker label:hover { color: var(--text); }
 .mode-picker input[type="radio"] {
   accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
 }
 
 /* Audio input picker — kept hidden until landing.js confirms devices exist.
-   Block layout means the `hidden` attribute works without a [hidden] override.
-   The <select> visual matches #new-class-form's text input. */
+   Block layout means the `hidden` attribute works without a [hidden]
+   override. The <select> visual matches #new-class-form's text input. */
 .audio-picker-label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-weight: 500;
 }
 .audio-device-select {
   width: 100%;
-  padding: 8px 10px;
+  padding: 9px 11px;
   font-size: 13px;
   font-family: inherit;
   color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  background: var(--panel-soft);
+  border: 1px solid var(--panel-border-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+  /* Native select arrow looks ok on dark; if we wanted custom, we'd
+     replace it. Keeping it native for cross-platform fidelity. */
+}
+.audio-device-select:hover { border-color: var(--accent-bright); }
+.audio-device-select:focus {
+  outline: none;
+  border-color: var(--accent-bright);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* ---- Kebab menu ---- */
+/* ======================================================================
+   Kebab menu (glass dropdown)
+   ====================================================================== */
 
 .kebab-wrap { position: relative; }
 .kebab-btn {
   flex: 0 0 auto;
-  width: 30px;
-  padding: 2px 0;
-  font-size: 16px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 18px;
   line-height: 1;
   color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: var(--r-sm);
+}
+.kebab-btn:hover {
+  color: var(--text);
+  background: var(--glass-bg-hover);
+  border-color: var(--glass-border);
 }
 .kebab-menu {
   position: absolute;
   top: 100%;
   right: 0;
   z-index: 10;
-  margin-top: 4px;
-  min-width: 160px;
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  padding: 4px;
+  margin-top: 6px;
+  min-width: 200px;
+  background: rgba(12, 18, 32, 0.78);
+  border: 1px solid var(--glass-border-2);
+  border-radius: var(--r-md);
+  padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow:
+    inset 0 1px 0 var(--glass-edge),
+    0 18px 50px -12px rgba(0, 0, 0, 0.7),
+    0 4px 14px rgba(0, 0, 0, 0.4);
+  animation: menu-in 140ms cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: top right;
+}
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
 }
 /* The `display: flex` above otherwise overrides the browser's
    `[hidden] { display: none }`, leaving the menu impossible to dismiss. */
@@ -609,24 +1052,55 @@ button:disabled { opacity: 0.5; cursor: default; }
   width: 100%;
   text-align: left;
   background: transparent;
-  border: none;
-  border-radius: 6px;
-  padding: 8px 10px;
+  border: 1px solid transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: var(--r-sm);
+  padding: 9px 11px;
   font-size: 13px;
+  color: var(--text-soft);
+  transition: background var(--t-fast), color var(--t-fast);
 }
-.kebab-menu button:hover { background: #272c36; }
-.kebab-menu button.danger-item { color: var(--error); }
+.kebab-menu button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+.kebab-menu button.danger-item { color: var(--wrong); }
+.kebab-menu button.danger-item:hover {
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--wrong);
+}
 
-/* ---- New-class card ---- */
+/* ======================================================================
+   New-class card
+   ====================================================================== */
 
 .new-class-card {
   border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.14);
   justify-content: center;
+  min-height: 180px;
+}
+.new-class-card:hover {
+  border-color: var(--accent-bright);
+  border-style: dashed;
 }
 .add-class-btn {
   flex: 1;
   background: transparent;
   color: var(--muted);
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  font-size: 14px;
+  padding: 24px 16px;
+  transition: color var(--t-fast);
+}
+.add-class-btn:hover {
+  background: transparent;
+  color: var(--accent-bright);
 }
 #new-class-form {
   display: flex;
@@ -637,33 +1111,64 @@ button:disabled { opacity: 0.5; cursor: default; }
 #new-class-form[hidden] { display: none; }
 #new-class-form input[type="text"] {
   width: 100%;
-  padding: 10px 12px;
+  padding: 11px 13px;
   font-size: 14px;
   font-family: inherit;
   color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  background: var(--panel-soft);
+  border: 1px solid var(--panel-border-2);
+  border-radius: var(--r-sm);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
 }
+#new-class-form input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent-bright);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+#new-class-form input[type="text"]::placeholder { color: var(--muted-dim); }
 
-/* ---- Concept browser ---- */
+/* ======================================================================
+   Concept browser
+   ====================================================================== */
 
 .sort-toggle {
   display: flex;
   gap: 6px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-radius: var(--r-pill);
+  padding: 3px;
+  box-shadow: var(--glass-shadow);
 }
 .sort-btn {
   flex: 0 0 auto;
-  padding: 5px 10px;
+  padding: 6px 14px;
   font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: var(--text-soft);
+  border-radius: var(--r-pill);
+}
+.sort-btn:hover {
+  background: var(--glass-bg-hover);
+  color: var(--text);
 }
 .sort-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+  border-color: var(--accent-bright);
   color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    0 4px 14px -4px var(--accent-glow);
 }
 
-.concept-panel { overflow-x: auto; }
+.concept-panel { overflow-x: auto; padding: 4px 6px; }
 .concept-table {
   width: 100%;
   border-collapse: collapse;
@@ -671,72 +1176,125 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .concept-table th {
   text-align: left;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.12em;
   color: var(--muted);
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--panel-border);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--panel-border-2);
+  font-family: var(--font-mono);
 }
 .concept-table td {
-  padding: 8px 10px;
+  padding: 12px;
   border-bottom: 1px solid var(--panel-border);
+  color: var(--text-soft);
 }
+.concept-table tbody tr {
+  transition: background var(--t-fast);
+}
+.concept-table tbody tr:hover { background: rgba(47, 123, 255, 0.04); }
 .concept-table tr:last-child td { border-bottom: none; }
-.c-name { font-weight: 500; }
-.c-importance { font-variant-numeric: tabular-nums; color: var(--accent); }
+.c-name { font-weight: 500; color: var(--text); }
+.c-importance {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-bright);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
 .c-mention {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+  font-family: var(--font-mono);
 }
 .c-category {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 5px;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
   font-size: 11px;
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--panel-border);
+  font-weight: 500;
+  color: var(--text-soft);
+  background: var(--panel-soft);
+  border: 1px solid var(--panel-border-2);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
 }
 
-/* ---- Session history ---- */
+/* ======================================================================
+   Session history
+   ====================================================================== */
 
 .history-class {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .session-row {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   text-decoration: none;
   color: var(--text);
-  transition: background 0.15s ease;
+  transition: background var(--t-fast), border-color var(--t-fast),
+              transform var(--t-fast);
 }
-.session-row:hover { background: #272c36; }
+.session-row:hover {
+  background: var(--panel-elev);
+  border-color: var(--panel-border-2);
+  transform: translateX(2px);
+}
 .session-row-main {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
 }
-.session-date { font-size: 15px; font-weight: 600; }
+.session-date {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+}
 .session-dur {
   font-size: 13px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
 }
 .session-row-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
+  gap: 6px 16px;
   font-size: 12px;
   color: var(--muted);
+  align-items: center;
 }
 .muted-tag {
-  color: var(--accent);
+  color: var(--accent-bright);
   font-style: italic;
+}
+
+/* ======================================================================
+   Narrow screens — keep things readable, don't pretend to be responsive.
+   ====================================================================== */
+
+@media (max-width: 520px) {
+  .app { padding: 20px 14px 48px; gap: 18px; }
+  header { gap: 10px; }
+  .title-block { gap: 8px; }
+  .class-grid { grid-template-columns: 1fr; }
+  .quiz-actions { flex-wrap: wrap; }
+  .panel { padding: 14px 16px; }
+  .audio-chip { max-width: 10em; }
+}
+
+/* Respect reduced-motion users. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
