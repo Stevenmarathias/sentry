@@ -1196,6 +1196,20 @@ button.danger:hover {
 .concept-table tbody tr:hover { background: rgba(47, 123, 255, 0.04); }
 .concept-table tr:last-child td { border-bottom: none; }
 .c-name { font-weight: 500; color: var(--text); }
+/* Concept-browser names are clickable (Pass 7) — link styled subtly so the
+   table stays calm at rest; full electric-blue treatment kicks in on hover. */
+.c-name a {
+  color: var(--text);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color var(--t-fast), border-color var(--t-fast),
+              text-shadow var(--t-fast);
+}
+.c-name a:hover {
+  color: var(--accent-bright);
+  border-bottom-color: var(--accent-bright);
+  text-shadow: 0 0 8px rgba(93, 151, 255, 0.4);
+}
 .c-importance {
   font-variant-numeric: tabular-nums;
   color: var(--accent-bright);
@@ -1275,6 +1289,121 @@ button.danger:hover {
 }
 
 /* ======================================================================
+   Concept detail page (Pass 7) — single-concept review.
+
+   Two solid reading panels (lecture mentions + in-depth explanation)
+   share the existing `.panel` look; the head + metadata above them is
+   compact and mono-heavy to match the concept browser's vocabulary.
+   ====================================================================== */
+
+.concept-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.concept-detail-name {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  line-height: 1.2;
+}
+.concept-detail-category {
+  /* Same pill shape as .c-category in the table, scaled up a notch. */
+  font-size: 11px;
+  padding: 4px 11px;
+}
+
+/* Metadata strip — horizontal rail of mono dt/dd pairs. Glass surface so
+   it reads as a header-area indicator rather than a reading panel. */
+.concept-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 4px;
+  margin-top: -6px;
+  padding: 14px 18px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+.concept-meta-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 14px 4px 0;
+  border-right: 1px solid var(--panel-border);
+}
+.concept-meta-cell:last-child { border-right: none; }
+.concept-meta dt {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.concept-meta dd {
+  font-size: 14px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.concept-meta-importance { color: var(--accent-bright) !important; }
+
+/* "From your lectures" — vertical list of mentions inside the panel. */
+.occurrence-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  counter-reset: occ;
+}
+.occurrence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.occurrence:last-child { border-bottom: none; padding-bottom: 0; }
+.occurrence-when {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: var(--accent-bright);
+}
+.occurrence-def {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.occurrence-def.empty {
+  font-style: italic;
+  color: var(--muted);
+}
+
+/* "In depth" — Claude prose. Plain text with \n\n paragraph breaks, so
+   `white-space: pre-wrap` preserves the rhythm without any markdown
+   parsing. Readability tuned for sustained reading. */
+.concept-explanation {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text);
+  white-space: pre-wrap;
+  /* Slightly narrower measure than the panel for comfortable reading
+     when the page is wider than ~600px. */
+  max-width: 64ch;
+}
+.concept-explanation-fallback {
+  font-size: 14px;
+}
+
+/* ======================================================================
    Narrow screens — keep things readable, don't pretend to be responsive.
    ====================================================================== */
 
@@ -1286,6 +1415,9 @@ button.danger:hover {
   .quiz-actions { flex-wrap: wrap; }
   .panel { padding: 14px 16px; }
   .audio-chip { max-width: 10em; }
+  .concept-detail-name { font-size: 24px; }
+  .concept-meta-cell { border-right: none; border-bottom: 1px solid var(--panel-border); padding-bottom: 8px; }
+  .concept-meta-cell:last-child { border-bottom: none; padding-bottom: 4px; }
 }
 
 /* Respect reduced-motion users. */

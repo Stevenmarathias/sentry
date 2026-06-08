@@ -1689,6 +1689,98 @@ def annotate_exam(exam: dict, class_dir: Path) -> dict:
     return exam
 
 
+# ---- Concept review: in-depth explanations (Pass 7) --------------------------
+#
+# /class/<name>/concept/<concept> renders one concept's stored data immediately
+# (category, importance, occurrences, lecture brief_definitions) and asks Claude
+# for a fuller "In depth" explanation grounded in those brief_definitions. The
+# generated text is cached in-process keyed by (class_name, normalized concept
+# name) so a refresh or revisit reuses it; a process restart clears the cache.
+# Mirrors the exam-cache pattern (in-memory, module-level dict).
+
+# (class_name, normalized concept name) -> {"explanation": str | None,
+#                                           "error": str | None}
+concept_explain_cache: dict = {}
+
+
+CONCEPT_EXPLAIN_SYSTEM_PROMPT = (
+    "You are a focused study tutor explaining a single concept to a student who "
+    "just heard it in lecture. The student gives you the concept name, its "
+    "category, and the brief one-line definitions their lecturer used in class. "
+    "Your job is to write a short, study-oriented explanation that builds on "
+    "what the lecture actually covered.\n\n"
+    "Structure (no headings, just flowing paragraphs separated by blank lines):\n"
+    "1. Start by acknowledging what the lecture said — paraphrase the lecture's "
+    "framing so the explanation feels connected to the student's material.\n"
+    "2. Expand with the fuller picture: the key details, mechanics, or "
+    "definitions that make the concept click.\n"
+    "3. Point out common misconceptions or things students typically get wrong.\n"
+    "4. Close with why it matters — where this concept connects to other ideas "
+    "in the field, or what it unlocks.\n\n"
+    "Target three to five focused paragraphs. Plain prose, no markdown headings "
+    "or bullet points. No greetings, no sign-offs. Stay grounded in the "
+    "specific framing the lecture used — do not contradict it, build on it. If "
+    "the lecture's framing is too brief to anchor to, lean on the concept name "
+    "and category and still write a clear study explanation."
+)
+
+
+def _explanation_context(concept: dict) -> str:
+    """Format a concept's lecture brief_definitions as prompt context.
+
+    Deduplicates trivially-identical definitions but keeps order so the most
+    recent framing the student heard appears last.
+    """
+    seen: set[str] = set()
+    lines: list[str] = []
+    for occ in concept.get("occurrences", []):
+        defn = (occ.get("definition") or "").strip()
+        if not defn or defn.lower() in seen:
+            continue
+        seen.add(defn.lower())
+        sf = occ.get("session_file", "")
+        date = sf[:10] if len(sf) >= 10 else sf
+        lines.append(f"- ({date or 'lecture'}) {defn}")
+    return "\n".join(lines) if lines else "- (no lecture definition recorded)"
+
+
+def generate_concept_explanation(class_name: str, concept: dict) -> dict:
+    """Ask Claude for an in-depth, lecture-grounded explanation of one concept.
+
+    Returns {"explanation": str | None, "error": str | None}. Failures are
+    captured (never raised) so the detail page can still render the stored
+    lecture data and surface a friendly message in the explanation slot.
+    """
+    name = concept.get("name", "").strip()
+    category = concept.get("category", "other")
+    context = _explanation_context(concept)
+    user_text = (
+        f"Concept: {name}\n"
+        f"Category: {category}\n"
+        f"Class: {class_name}\n\n"
+        f"What the lecture said about it (one or more brief definitions, "
+        f"oldest first):\n{context}\n\n"
+        f"Write the study-oriented in-depth explanation now."
+    )
+    try:
+        client = camera_worker.analyzer.client
+        message = client.messages.create(
+            model=MODEL_ID,
+            max_tokens=2000,
+            thinking={"type": "adaptive"},
+            system=CONCEPT_EXPLAIN_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_text}],
+        )
+        text = next(
+            (b.text for b in message.content if b.type == "text"), ""
+        ).strip()
+        if not text:
+            return {"explanation": None, "error": "empty response"}
+        return {"explanation": text, "error": None}
+    except Exception as exc:
+        return {"explanation": None, "error": str(exc)}
+
+
 # ---- Quiz PDF export (Pass 2B) -----------------------------------------------
 
 def build_quiz_pdf(quiz: dict, class_name: str, session_date: str, *,
@@ -2328,6 +2420,73 @@ def class_concepts(class_name: str):
         })
     concepts.sort(key=lambda c: c["importance"], reverse=True)
     return render_template("concepts.html", class_name=name, concepts=concepts)
+
+
+@app.route("/class/<class_name>/concept/<concept_name>")
+def class_concept_detail(class_name: str, concept_name: str):
+    """In-depth review of a single concept (Pass 7).
+
+    Stored data (category, importance, occurrences with lecture definitions)
+    renders immediately; the "In depth" explanation is generated on demand
+    via Claude and cached in `concept_explain_cache`, so a refresh or
+    revisit is free.
+    """
+    name = sanitize_class_name(class_name)
+    class_dir = SESSIONS_DIR / name
+    if not name or not class_dir.is_dir():
+        return redirect(url_for("landing"))
+
+    store = load_concepts(class_dir)
+    target = normalize_concept(concept_name)
+    concept = next(
+        (c for c in (store.get("concepts", []) if store else [])
+         if normalize_concept(c.get("name", "")) == target),
+        None,
+    )
+    if concept is None:
+        # Unknown concept — fall back to the browser rather than 404'ing.
+        return redirect(url_for("class_concepts", class_name=name))
+
+    # Sort occurrences chronologically (oldest first) and decorate each with a
+    # friendly date + elapsed label. The template iterates this list directly.
+    occurrences = sorted(
+        concept.get("occurrences", []),
+        key=lambda o: (o.get("session_file", ""), o.get("timestamp", "")),
+    )
+    occ_rows = []
+    for occ in occurrences:
+        occ_rows.append({
+            "label": _mention_label(occ),
+            "definition": (occ.get("definition") or "").strip(),
+            "session_file": occ.get("session_file", ""),
+        })
+
+    first_occ = occurrences[0] if occurrences else {}
+    last_occ = occurrences[-1] if occurrences else {}
+
+    # Pull (or generate-and-cache) the in-depth explanation.
+    cache_key = (name, target)
+    cached = concept_explain_cache.get(cache_key)
+    if cached is None:
+        cached = generate_concept_explanation(name, concept)
+        # Only cache successful generations — a transient API failure
+        # shouldn't poison the slot forever (a reload retries).
+        if cached.get("explanation"):
+            concept_explain_cache[cache_key] = cached
+
+    return render_template(
+        "concept_detail.html",
+        class_name=name,
+        concept_name=concept.get("name", ""),
+        category=concept.get("category", "other"),
+        importance=concept.get("importance_score", 0.0),
+        occurrence_count=len(occurrences),
+        first_label=_mention_label(first_occ),
+        last_label=_mention_label(last_occ),
+        occurrences=occ_rows,
+        explanation=cached.get("explanation"),
+        explain_error=cached.get("error"),
+    )
 
 
 @app.route("/rename_class", methods=["POST"])

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentry — {{ concept_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div class="title-block">
+        <h1>Sentry</h1>
+        <span class="class-tag">{{ class_name }}</span>
+      </div>
+      <a class="link"
+         href="{{ url_for('class_concepts', class_name=class_name) }}">
+        ← Back to concepts
+      </a>
+    </header>
+
+    <p class="section-label">Concept review</p>
+
+    <div class="concept-detail-head">
+      <h2 class="concept-detail-name">{{ concept_name }}</h2>
+      <span class="c-category concept-detail-category">{{ category }}</span>
+    </div>
+
+    <!-- Metadata strip: mono, dense, no API call needed — renders instantly. -->
+    <dl class="concept-meta">
+      <div class="concept-meta-cell">
+        <dt>Importance</dt>
+        <dd class="concept-meta-importance">{{ '%.2f' | format(importance) }}</dd>
+      </div>
+      <div class="concept-meta-cell">
+        <dt>Times seen</dt>
+        <dd>{{ occurrence_count }}×</dd>
+      </div>
+      <div class="concept-meta-cell">
+        <dt>First mention</dt>
+        <dd>{{ first_label }}</dd>
+      </div>
+      <div class="concept-meta-cell">
+        <dt>Last mention</dt>
+        <dd>{{ last_label }}</dd>
+      </div>
+    </dl>
+
+    <!-- Reading surface #1: what the lecture actually said.
+         Stored data only — no API call — so it renders instantly. -->
+    <article class="panel">
+      <h2>From your lectures</h2>
+      {% if occurrences %}
+      <ol class="occurrence-list">
+        {% for occ in occurrences %}
+        <li class="occurrence">
+          <div class="occurrence-when">{{ occ.label }}</div>
+          {% if occ.definition %}
+          <div class="occurrence-def">{{ occ.definition }}</div>
+          {% else %}
+          <div class="occurrence-def empty">No definition recorded for this mention.</div>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="empty">No recorded mentions for this concept.</p>
+      {% endif %}
+    </article>
+
+    <!-- Reading surface #2: the Claude-generated explanation.
+         Cached server-side; on API failure the stored data above still
+         renders and a friendly message lives in this slot. -->
+    <article class="panel">
+      <h2>In depth</h2>
+      {% if explanation %}
+      <p class="concept-explanation">{{ explanation }}</p>
+      {% else %}
+      <p class="empty concept-explanation-fallback">
+        Couldn't generate the deeper explanation right now — your lecture
+        notes are above.
+      </p>
+      {% endif %}
+    </article>
+  </main>
+</body>
+</html>

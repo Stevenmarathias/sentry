@@ -43,7 +43,11 @@
           <tr data-name="{{ c.name | lower }}"
               data-importance="{{ c.importance }}"
               data-recency="{{ c.last_key }}">
-            <td class="c-name">{{ c.name }}</td>
+            <td class="c-name">
+              <a href="{{ url_for('class_concept_detail',
+                                  class_name=class_name,
+                                  concept_name=c.name) }}">{{ c.name }}</a>
+            </td>
             <td><span class="c-category">{{ c.category }}</span></td>
             <td class="c-importance">{{ '%.2f' | format(c.importance) }}</td>
             <td>{{ c.count }}×</td>
