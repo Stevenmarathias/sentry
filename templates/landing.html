@@ -26,7 +26,10 @@
                role="button"
                aria-label="Open {{ c.name }} overview">
         <div class="class-card-head">
-          <h2 class="class-card-name">{{ c.name }}</h2>
+          <h2 class="class-card-name">
+            <span class="class-card-name-text">{{ c.name }}</span>
+            <span class="class-card-arrow" aria-hidden="true">→</span>
+          </h2>
           <!-- Kebab menu (Pass 8): rename + delete only.
                Concepts / History / Exam are now first-class buttons on
                the per-class overview at /class/<name>. -->
@@ -39,11 +42,14 @@
           </div>
         </div>
         <p class="class-card-meta">
-          {{ c.session_count }} session{{ '' if c.session_count == 1 else 's' }}
-          · {{ c.concept_count }} concept{{ '' if c.concept_count == 1 else 's' }}
-          {% if c.latest != '—' %}<br>last session {{ c.latest }}{% endif %}
+          {% if c.session_count == 0 %}
+            No sessions yet
+          {% else %}
+            {{ c.session_count }} session{{ '' if c.session_count == 1 else 's' }} ·
+            {{ c.concept_count }} concept{{ '' if c.concept_count == 1 else 's' }}{% if c.latest != '—' %} ·
+            last {{ c.latest }}{% endif %}
+          {% endif %}
         </p>
-        <span class="class-card-hint">Open →</span>
       </article>
       {% endfor %}
 

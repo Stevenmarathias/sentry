@@ -879,13 +879,20 @@ button.danger:hover {
 }
 
 /* ======================================================================
-   Landing page: class cards (glass with hover lift)
+   Landing page: class cards (Pass 9 — content-sized, tight grid)
+
+   Two equal columns on desktop, one on narrow screens. Cards size to
+   their content; row-mates equalise via CSS grid default behaviour.
+   No min-heights, no `flex: 1` content fillers, no margin-top:auto
+   spacers — those were what made cards balloon in Pass 8.
    ====================================================================== */
 
 .class-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  /* `align-items: stretch` is the default; same-row cards stay equal
+     height because of grid row-tracks sizing to the tallest item. */
 }
 
 /* Override the solid .panel look for class cards — they're floating
@@ -893,8 +900,8 @@ button.danger:hover {
 .class-card {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 18px 18px 16px;
+  gap: 6px;
+  padding: 16px 18px;
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   backdrop-filter: var(--glass-blur);
@@ -910,49 +917,61 @@ button.danger:hover {
   box-shadow: var(--glass-shadow-lift);
 }
 
-/* Pass 8: existing-class cards are whole-card clickable (navigate to the
-   per-class overview). The hint sits in the bottom corner and gently
-   shifts on hover — a quiet "this is interactive" affordance. */
+/* Existing-class cards are whole-card clickable (navigate to the
+   per-class overview at /class/<name>). The inline arrow next to the
+   name is the affordance — quiet at rest, electric-blue on hover. */
 .class-card[data-class] { cursor: pointer; }
 .class-card[data-class]:focus-visible {
   outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
 }
-.class-card-hint {
-  align-self: flex-end;
-  font-size: 12px;
-  font-family: var(--font-mono);
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  transition: color var(--t-fast), transform var(--t-fast),
-              text-shadow var(--t-fast);
-  margin-top: auto;
-}
-.class-card[data-class]:hover .class-card-hint {
-  color: var(--accent-bright);
-  transform: translateX(2px);
-  text-shadow: 0 0 8px var(--accent-glow);
-}
+
 .class-card-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+  /* No bottom margin — the next sibling (.class-card-meta) gets the
+     6px row gap from the parent flex column. */
 }
 .class-card-name {
-  font-size: 17px;
+  flex: 1 1 auto;
+  font-size: 20px;
   font-weight: 600;
-  letter-spacing: -0.005em;
+  letter-spacing: -0.01em;
   text-transform: none;
   color: var(--text);
   word-break: break-word;
-  line-height: 1.3;
+  line-height: 1.25;
+  min-width: 0;
+}
+/* Inline arrow is placed in the heading text-flow so it sits right
+   after the last word of the name — no absolute positioning, no
+   bottom-pinned hint. The trailing-space character before the arrow
+   keeps the spacing crisp regardless of font-feature settings. */
+.class-card-name-text { margin-right: 6px; }
+.class-card-arrow {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--muted);
+  transition: color var(--t-fast), transform var(--t-fast),
+              text-shadow var(--t-fast);
+  flex: 0 0 auto;
+  line-height: 1;
+}
+.class-card[data-class]:hover .class-card-arrow,
+.class-card[data-class]:focus-visible .class-card-arrow {
+  color: var(--accent-bright);
+  transform: translateX(3px);
+  text-shadow: 0 0 8px var(--accent-glow);
 }
 .class-card-meta {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--muted);
-  flex: 1;
-  line-height: 1.5;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  line-height: 1.45;
+  /* No more `flex: 1` — the meta line is just text, not a spacer. */
 }
 .class-card form {
   display: flex;
@@ -1100,18 +1119,31 @@ button.danger:hover {
    New-class card
    ====================================================================== */
 
+/* Pass 9: collapsed create card sizes to the + button — grid stretches it
+   to match its row-mate so heights line up without a fixed min-height.
+   When the form opens, the card grows naturally and spans the full row
+   (see :has() rule below) so it doesn't drag a sibling along with it. */
 .new-class-card {
   border-style: dashed;
   border-color: rgba(255, 255, 255, 0.14);
+  align-items: stretch;
   justify-content: center;
-  min-height: 180px;
+  padding: 0;
 }
 .new-class-card:hover {
   border-color: var(--accent-bright);
   border-style: dashed;
 }
+/* While the create form is open, the card takes the full row width so an
+   adjacent data card doesn't get stretched to match the taller form.
+   :has() is supported in every current browser; if it's not present, the
+   card just stays in its own column (legible, just slightly less tidy). */
+.new-class-card:has(#new-class-form:not([hidden])) {
+  grid-column: 1 / -1;
+  padding: 16px 18px;
+}
 .add-class-btn {
-  flex: 1;
+  flex: 1 1 auto;
   background: transparent;
   color: var(--muted);
   border: none;
@@ -1119,7 +1151,9 @@ button.danger:hover {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   font-size: 14px;
-  padding: 24px 16px;
+  font-weight: 500;
+  /* Match the data card's vertical padding (16px) so heights align. */
+  padding: 16px;
   transition: color var(--t-fast);
 }
 .add-class-btn:hover {
