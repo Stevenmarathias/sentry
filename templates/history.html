@@ -49,10 +49,25 @@
           <span>{{ s.concept_count }} concepts</span>
           {% if not s.has_quiz %}<span class="muted-tag">quiz on open</span>{% endif %}
         </div>
+        <!-- Pass 13: per-lecture quiz action.
+             Lives inside the row anchor; the click handler in
+             history.js calls preventDefault + stopPropagation so this
+             never triggers the outer "open saved quiz" link. -->
+        <div class="session-row-actions">
+          <button type="button"
+                  class="quiz-this-btn"
+                  data-quiz-url="{{ url_for('class_session_quiz',
+                                            class_name=c.name,
+                                            session_id=s.filename[:-3]) }}">
+            <span class="quiz-this-label">📝 Quiz this lecture</span>
+            <span class="quiz-this-spinner" aria-hidden="true" hidden>Generating…</span>
+          </button>
+        </div>
       </a>
       {% endfor %}
     </section>
     {% endfor %}
   </main>
+  <script src="{{ url_for('static', filename='history.js') }}"></script>
 </body>
 </html>

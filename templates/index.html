@@ -101,6 +101,14 @@
         earlier sessions in this class that have come up again — likely material
         for an exam.
       </p>
+      {% if quiz_error %}
+      <!-- Pass 13: API-failure fallback for the per-lecture quiz route.
+           Other routes that render index.html don't pass quiz_error,
+           so the banner stays absent for them. -->
+      <div class="quiz-error-banner" role="status">
+        Couldn't generate a quiz right now — try again.
+      </div>
+      {% endif %}
       <div id="summary-banner" class="summary-banner" hidden></div>
       <div id="quiz-cards"></div>
     </div>

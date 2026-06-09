@@ -2458,6 +2458,86 @@ def history_session(class_name: str, filename: str):
     )
 
 
+# ---- Past-lecture quiz (Pass 13) --------------------------------------------
+#
+# /class/<n>/session/<sid>/quiz generates a fresh quiz scoped to one past
+# session's stored transcript. Reuses the existing generate_quiz pipeline and
+# the index.html quiz view — only the input scope is new. Cached in-process
+# keyed by (class, session_id); failures are deliberately NOT cached so a
+# reload retries (consistent with concept_explain_cache).
+
+# `_HHMM` (no `.md`) — the same identifier already used as session_id in
+# template contexts and as the URL filename for history_session.
+SESSION_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}$")
+
+past_quiz_cache: dict = {}   # (class_name, session_id) -> annotated quiz dict
+
+
+@app.route("/class/<class_name>/session/<session_id>/quiz")
+def class_session_quiz(class_name: str, session_id: str):
+    """Generate (or replay from cache) a quiz for a single past session.
+
+    Recurring "FROM PRIOR LECTURE" tagging is deliberately suppressed here:
+    cross-lecture memory only makes sense in the live end-of-session flow
+    (where the just-recorded transcript is the anchor for spotting carryover
+    concepts). For an after-the-fact per-lecture review, mixing in past-
+    lecture questions would muddle the scope. Whole-class carryover is
+    already covered by the semester Practice Exam from Pass 4. So this
+    quiz is purely about the chosen lecture's own content — matching the
+    pattern history_session() uses for its no-saved-quiz fallback path.
+    """
+    name = sanitize_class_name(class_name)
+    if not name or not (SESSIONS_DIR / name).is_dir():
+        return redirect(url_for("history"))
+
+    # Accept the session id either as the stem (matches the template
+    # context) or with a trailing `.md` (matches the existing history-row
+    # filename). Strip the suffix before validating.
+    sid = session_id[:-3] if session_id.endswith(".md") else session_id
+    if not SESSION_ID_RE.match(sid):
+        return redirect(url_for("history"))
+
+    md_path = SESSIONS_DIR / name / f"{sid}.md"
+    if not md_path.is_file():
+        return redirect(url_for("history"))
+
+    md = md_path.read_text(encoding="utf-8")
+    audio_match = AUDIO_INPUT_RE.search(md)
+    audio_input = audio_match.group(1).strip() if audio_match else "System default"
+    start = _start_from_markdown(md) or _start_from_filename(sid) or datetime.now()
+
+    cache_key = (name, sid)
+    cached = past_quiz_cache.get(cache_key)
+    quiz_error = False
+    if cached is None:
+        # Same transcript split history_session already uses on its
+        # regenerate path — everything before the saved-quiz section.
+        transcript = md.split("## Practice Quiz")[0]
+        try:
+            quiz = generate_quiz(transcript, [])
+            annotate_quiz(quiz, start, md_path.parent)
+            past_quiz_cache[cache_key] = quiz   # cache successes only
+            cached = quiz
+        except Exception as exc:
+            # Don't cache — a reload should retry rather than serve a
+            # permanent "couldn't generate" page until process restart.
+            print(f"Warning: per-lecture quiz generation failed ({exc}).")
+            cached = {"questions": []}
+            quiz_error = True
+
+    return render_template(
+        "index.html",
+        class_name=name,
+        quiz=cached,
+        session_id=sid,
+        history_mode=True,
+        back_url=url_for("history"),
+        mode="board",
+        audio_input=audio_input,
+        quiz_error=quiz_error,
+    )
+
+
 @app.route("/class/<class_name>/exam")
 def class_exam(class_name: str):
     """Semester practice exam — top 15 concepts → 20 questions via Claude.
