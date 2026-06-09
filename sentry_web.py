@@ -1910,6 +1910,188 @@ def build_quiz_pdf(quiz: dict, class_name: str, session_date: str, *,
     return buf
 
 
+# ---- YouTube import (Pass 14) -----------------------------------------------
+#
+# Two transcript paths: try captions first (free, instant) via
+# youtube-transcript-api with a yt-dlp VTT fallback; if no captions exist
+# at all, download audio with yt-dlp and run it through Whisper. The
+# audio path is slow (minutes for a long video), so callers run this on
+# a background thread (see ImportJobRegistry + run_import_job below).
+#
+# NOTE: yt-dlp is the moving part here. YouTube changes its frontend
+# frequently and yt-dlp ships fixes within days/weeks — keep it pinned
+# loosely (`yt-dlp` rather than `==<version>`) and `pip install -U` it
+# whenever an import suddenly starts erroring out with "Unable to
+# extract …" or similar.
+
+import tempfile
+import uuid
+
+# Matches every standard YouTube URL shape we care about and pulls out
+# the 11-char video id. Reject anything else so users can't accidentally
+# kick off a download against an arbitrary host.
+YOUTUBE_URL_RE = re.compile(
+    r"^https?://(?:www\.|m\.|music\.)?"
+    r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/|live/)|youtu\.be/)"
+    r"([0-9A-Za-z_-]{11})"
+    r"(?:[?&#].*)?$"
+)
+
+
+def parse_youtube_url(url: str) -> Optional[str]:
+    """Return the 11-char video id if `url` is a YouTube URL; else None."""
+    if not url:
+        return None
+    m = YOUTUBE_URL_RE.match(url.strip())
+    return m.group(1) if m else None
+
+
+def fetch_video_metadata(url: str) -> dict:
+    """Resolve a YouTube URL's title / duration without downloading the video.
+
+    Used both up-front (so the session header knows the video title) and
+    indirectly to confirm the URL actually resolves — a malformed-but-
+    URL-shaped string fails here cleanly, before any caption / audio work.
+    """
+    import yt_dlp
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    return {
+        "video_id": info.get("id", "") or parse_youtube_url(url) or "",
+        "title": info.get("title", "") or "Untitled video",
+        "duration": int(info.get("duration") or 0),
+        "uploader": info.get("uploader", "") or "",
+    }
+
+
+def fetch_captions(url: str) -> str:
+    """Best-effort caption fetch. Empty string means 'no captions available'.
+
+    Primary path: youtube-transcript-api (newer instance API). Fallback:
+    yt-dlp's `--write-subs` writing a VTT we parse ourselves. Either path
+    that returns text wins; both raising means "no captions" and the
+    caller should fall through to the audio→Whisper path.
+    """
+    vid = parse_youtube_url(url)
+    if not vid:
+        return ""
+
+    # ---- Primary: youtube-transcript-api ----
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        api = YouTubeTranscriptApi()
+        fetched = api.fetch(vid)
+        text = " ".join(s.text for s in fetched if getattr(s, "text", ""))
+        text = text.strip()
+        if text:
+            return text
+    except Exception as exc:
+        # Fall through to the VTT fallback; many "transcripts disabled"
+        # videos still expose subtitles via yt-dlp.
+        print(f"youtube-transcript-api unavailable for {vid}: {exc}")
+
+    # ---- Fallback: yt-dlp VTT subtitles ----
+    try:
+        import yt_dlp
+        with tempfile.TemporaryDirectory(prefix="sentry-yt-subs-") as tmp:
+            out_template = os.path.join(tmp, "%(id)s.%(ext)s")
+            opts = {
+                "quiet": True, "no_warnings": True, "noprogress": True,
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": ["en", "en-US", "en-GB"],
+                "subtitlesformat": "vtt",
+                "outtmpl": out_template,
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.extract_info(url, download=True)
+            text = _read_vtt_dir(tmp)
+            return text
+    except Exception as exc:
+        print(f"yt-dlp VTT fallback failed for {vid}: {exc}")
+        return ""
+
+
+def _read_vtt_dir(directory: str) -> str:
+    """Parse the first VTT subtitle file under `directory` to plain text."""
+    for entry in sorted(os.listdir(directory)):
+        if not entry.endswith(".vtt"):
+            continue
+        path = os.path.join(directory, entry)
+        lines: list[str] = []
+        for raw in Path(path).read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            # Skip headers, blank lines, cue timing rows ("00:01:02.000 -->
+            # 00:01:05.000"), and the numeric cue counters.
+            if not line or line.startswith("WEBVTT") or "-->" in line:
+                continue
+            if line.isdigit():
+                continue
+            # Strip simple inline tags (<c>, <00:00:00.000>, etc.).
+            line = re.sub(r"<[^>]+>", "", line)
+            lines.append(line)
+        text = " ".join(lines).strip()
+        if text:
+            return text
+    return ""
+
+
+def transcribe_audio(url: str, status_cb=None) -> str:
+    """Download audio via yt-dlp, run Whisper, return text. Always cleans up.
+
+    `status_cb(stage)` is invoked with short progress strings so the
+    background job can surface "downloading audio" vs "transcribing audio"
+    to the user — both phases can take minutes for a long video.
+    """
+    import yt_dlp
+    tmp = Path(tempfile.mkdtemp(prefix="sentry-yt-audio-"))
+    audio_path: Optional[Path] = None
+    try:
+        if status_cb:
+            status_cb("downloading audio")
+        out_template = str(tmp / "audio.%(ext)s")
+        opts = {
+            "format": "bestaudio/best",
+            "outtmpl": out_template,
+            "quiet": True, "no_warnings": True, "noprogress": True,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "m4a",
+            }],
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+        # The postprocessor renames to .m4a; grab whichever audio.* landed.
+        candidates = sorted(tmp.glob("audio.*"))
+        if not candidates:
+            raise RuntimeError("yt-dlp did not produce an audio file")
+        audio_path = candidates[0]
+
+        if status_cb:
+            status_cb("transcribing audio (this can take a few minutes)")
+        import whisper
+        # Match the live-session model from sentry.py (WHISPER_MODEL="small").
+        # load_model caches on disk, so first import pays the download cost
+        # once and every subsequent import reuses it.
+        model = whisper.load_model(
+            os.environ.get("SENTRY_WHISPER_MODEL", "small")
+        )
+        result = model.transcribe(str(audio_path), fp16=False)
+        return (result.get("text") or "").strip()
+    finally:
+        # Always clean up — don't leave audio sitting in /tmp.
+        try:
+            if audio_path is not None:
+                audio_path.unlink(missing_ok=True)
+            for leftover in tmp.glob("*"):
+                leftover.unlink(missing_ok=True)
+            tmp.rmdir()
+        except Exception:
+            pass
+
+
 # ---- Flask app ---------------------------------------------------------------
 
 app = Flask(__name__)
@@ -2588,6 +2770,246 @@ def class_exam(class_name: str):
     new_ts = datetime.now().strftime("%Y%m%d%H%M%S")
     exam_cache[(name, new_ts)] = result
     return redirect(url_for("class_exam", class_name=name, ts=new_ts))
+
+
+# ---- YouTube import: jobs + routes (Pass 14) --------------------------------
+#
+# Imports run on a daemon Thread because the audio→Whisper path can take
+# minutes. The job lives in a module-level dict keyed by a generated id;
+# the page polls /import_status/<job_id> for the current stage. We
+# deliberately do NOT pull in Celery/RQ/Redis — for a local single-process
+# app this in-memory registry is enough, and cloud job infra is a separate
+# concern for the deploy phase.
+
+import_jobs: dict = {}            # job_id -> {"stage","status","class",
+                                  #            "url","title","result","error"}
+import_jobs_lock = threading.Lock()
+
+
+def _new_import_job(class_name: str, url: str) -> str:
+    """Allocate a job_id and seed the registry. Returns the id."""
+    job_id = uuid.uuid4().hex[:12]
+    with import_jobs_lock:
+        import_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",        # queued | running | done | error
+            "stage": "starting",
+            "class_name": class_name,
+            "url": url,
+            "title": "",
+            "result": None,
+            "error": None,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    return job_id
+
+
+def _set_job(job_id: str, **fields) -> None:
+    """Thread-safe partial update of a job's state."""
+    with import_jobs_lock:
+        job = import_jobs.get(job_id)
+        if job is not None:
+            job.update(fields)
+
+
+def _unique_session_path(class_dir: Path, stamp: str) -> Path:
+    """A non-clobbering session file path for <stamp>.md, with -N suffixes
+    if the user imports multiple videos within the same minute."""
+    candidate = class_dir / f"{stamp}.md"
+    suffix = 1
+    while candidate.exists():
+        candidate = class_dir / f"{stamp}-{suffix}.md"
+        suffix += 1
+    return candidate
+
+
+def _write_imported_session_markdown(file_path: Path, *, class_name: str,
+                                     started: datetime, url: str, title: str,
+                                     used: str, transcript: str) -> None:
+    """Write a session file in the SAME shape captured sessions use, so
+    history / concepts / per-lecture quiz pipelines treat it identically.
+
+    The header carries the import-specific fields (source URL, video title,
+    transcript source) instead of "Mode" / "Audio input"; the AUDIO_INPUT_RE
+    that history_session reads for the live-view header still finds a value,
+    so the existing render path doesn't break.
+    """
+    ts = started.strftime("%H:%M:%S")
+    body = (
+        f"# Sentry Session — {class_name}\n\n"
+        f"**Started:** {started:%Y-%m-%d %H:%M}\n\n"
+        f"**Source:** YouTube import\n\n"
+        f"**Video URL:** {url}\n\n"
+        f"**Video title:** {title}\n\n"
+        f"**Transcript source:** {used}\n\n"
+        f"**Audio input:** YouTube import ({used})\n\n"
+        f"---\n\n"
+        f"**🎙️ {ts}** — {transcript}\n\n"
+    )
+    file_path.write_text(body, encoding="utf-8")
+
+
+def _friendly_import_error(exc: Exception) -> str:
+    """Map a low-level exception to a one-line message the user can act on."""
+    msg = str(exc)
+    low = msg.lower()
+    if "private" in low or "members-only" in low or "sign in" in low:
+        return "That video is private or requires sign-in."
+    if "video unavailable" in low or "not available" in low:
+        return "Video unavailable (deleted, region-locked, or removed)."
+    if "live event" in low or "this live event" in low:
+        return "Live streams can't be imported until they're finished."
+    if "could not produce a transcript" in low:
+        return "Couldn't get a transcript (no captions and audio failed)."
+    if "ffmpeg" in low:
+        return "Audio extraction failed (ffmpeg). Try a captioned video."
+    if "api" in low and "key" in low:
+        return "Claude API call failed — check ANTHROPIC_API_KEY."
+    return f"Import failed: {msg[:200]}"
+
+
+def run_import_job(job_id: str, class_name: str, url: str) -> None:
+    """Background worker: fetch transcript, write session, extract concepts,
+    generate quiz with carryover. Mirrors end_session() but for an imported
+    transcript instead of a live one. On error, leaves no partial session.
+    """
+    file_path: Optional[Path] = None
+    try:
+        _set_job(job_id, status="running", stage="resolving video")
+        meta = fetch_video_metadata(url)
+        _set_job(job_id, title=meta["title"])
+
+        # 1. Captions first (free + instant when available).
+        _set_job(job_id, stage="fetching captions")
+        transcript = fetch_captions(url)
+        used = "captions"
+
+        # 2. Audio fallback if no captions.
+        if not transcript:
+            _set_job(job_id, stage="no captions; downloading audio")
+            transcript = transcribe_audio(
+                url,
+                status_cb=lambda s: _set_job(job_id, stage=s),
+            )
+            used = "audio + whisper"
+        if not transcript or not transcript.strip():
+            raise RuntimeError("Could not produce a transcript from the video.")
+
+        # 3. Write the session markdown.
+        _set_job(job_id, stage="saving transcript")
+        class_dir = SESSIONS_DIR / class_name
+        class_dir.mkdir(parents=True, exist_ok=True)
+        started = datetime.now()
+        stamp = started.strftime("%Y-%m-%d_%H%M")
+        file_path = _unique_session_path(class_dir, stamp)
+        _write_imported_session_markdown(
+            file_path, class_name=class_name, started=started,
+            url=url, title=meta["title"], used=used, transcript=transcript,
+        )
+
+        # 4. Concept extraction + carryover, like live end_session.
+        markdown = file_path.read_text(encoding="utf-8")
+        _set_job(job_id, stage="extracting concepts")
+        extracted = extract_concepts(markdown)
+        if extracted:
+            store = load_concepts(class_dir)
+            recurring = pick_recurring_concepts(store, extracted)
+        else:
+            store = None
+            recurring = []
+
+        # 5. Quiz with FROM PRIOR LECTURE carryover.
+        _set_job(job_id, stage="generating quiz")
+        quiz = generate_quiz(markdown, recurring)
+
+        # 6. Persist concepts + quiz markdown.
+        if extracted:
+            store = merge_concepts(store, extracted, file_path.name, class_name)
+            save_concepts(class_dir, store)
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(f"\n---\n\n## Practice Quiz\n\n"
+                    f"{render_quiz_markdown(quiz)}\n")
+
+        # 7. Done — hand the page the resulting session id so it can
+        #    navigate straight to the quiz view.
+        _set_job(
+            job_id,
+            status="done",
+            stage="done",
+            result={
+                "class_name": class_name,
+                "session_id": file_path.stem,
+                "session_filename": file_path.name,
+                "quiz_url": url_for_internal_history_session(
+                    class_name, file_path.name),
+            },
+        )
+    except Exception as exc:
+        # Don't leave a half-written session if anything failed.
+        try:
+            if file_path is not None and file_path.exists():
+                file_path.unlink()
+        except Exception:
+            pass
+        _set_job(
+            job_id,
+            status="error",
+            stage="error",
+            error=_friendly_import_error(exc),
+        )
+        print(f"Import job {job_id} failed: {exc}")
+
+
+def url_for_internal_history_session(class_name: str, filename: str) -> str:
+    """Build the /history/session/<class>/<file> URL outside a request ctx.
+
+    `run_import_job` runs on a background thread without an HTTP request
+    context, so Flask's `url_for` would raise. The route's shape is stable;
+    spelling it out here keeps the worker thread self-contained.
+    """
+    from urllib.parse import quote
+    return (f"/history/session/{quote(class_name, safe='')}"
+            f"/{quote(filename, safe='')}")
+
+
+@app.route("/class/<class_name>/import", methods=["POST"])
+def class_import(class_name: str):
+    """Kick off a YouTube import job for `class_name`. Non-blocking — returns
+    immediately with a job_id the page can poll."""
+    name = sanitize_class_name(class_name)
+    if not name:
+        return jsonify({"ok": False, "error": "Invalid class name."}), 400
+    (SESSIONS_DIR / name).mkdir(parents=True, exist_ok=True)
+
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not parse_youtube_url(url):
+        return jsonify({
+            "ok": False,
+            "error": "That doesn't look like a YouTube URL.",
+        }), 400
+
+    job_id = _new_import_job(name, url)
+    t = threading.Thread(
+        target=run_import_job,
+        args=(job_id, name, url),
+        name=f"sentry-import-{job_id}",
+        daemon=True,
+    )
+    t.start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/import_status/<job_id>")
+def import_status(job_id: str):
+    """Polled by the import UI every ~1.5s for the current stage / result."""
+    with import_jobs_lock:
+        job = import_jobs.get(job_id)
+        if job is None:
+            return jsonify({"ok": False, "error": "Unknown job."}), 404
+        # Return a shallow copy so the caller can serialize while the
+        # worker thread keeps mutating the live entry.
+        return jsonify({"ok": True, **dict(job)})
 
 
 @app.route("/class/<class_name>")

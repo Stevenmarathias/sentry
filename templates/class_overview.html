@@ -63,6 +63,37 @@
       </form>
     </section>
 
+    <!-- Pass 14: import a lecture from YouTube. Tries captions first
+         (instant); falls back to downloading audio and transcribing
+         with Whisper (minutes). The button kicks off a background job
+         and a status block below tracks live stage updates. -->
+    <section class="import-card">
+      <h2 class="import-card-title">Import from YouTube</h2>
+      <p class="import-card-hint">
+        Paste a YouTube URL — Sentry pulls captions if they're there,
+        otherwise downloads the audio and transcribes it. Caption-less
+        videos can take a few minutes.
+      </p>
+      <form id="import-form" class="import-form" autocomplete="off">
+        <input type="url"
+               id="import-url"
+               name="url"
+               class="import-url"
+               placeholder="https://www.youtube.com/watch?v=…"
+               required>
+        <button type="submit" class="primary import-btn">Import</button>
+      </form>
+      <!-- Status surface — hidden until a job is in flight. The JS
+           toggles `hidden` here; CSS keeps the [hidden] guard since
+           .import-status has display:flex. -->
+      <div id="import-status" class="import-status" hidden>
+        <span class="import-status-spinner" aria-hidden="true">⏳</span>
+        <span class="import-status-stage" id="import-status-stage">
+          Starting…
+        </span>
+      </div>
+    </section>
+
     <p class="section-label">Browse</p>
 
     <!-- Three secondary actions, each a glass tile that maps to an existing

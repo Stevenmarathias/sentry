@@ -1514,6 +1514,82 @@ h2.class-card-name {
   font-style: italic;
 }
 
+/* Pass 14: "Import from YouTube" card on the per-class overview page.
+   Sits between the Start Session hero and the Browse action grid. Same
+   glass surface language; URL input + primary button + live status row
+   that's hidden until a job is in flight. The class accent (Pass 11)
+   bleeds through via var(--class-accent) for the button focus ring. */
+.import-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px 20px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+.import-card-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--text);
+}
+.import-card-hint {
+  font-size: 13px;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+.import-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.import-url {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel-soft);
+  border: 1px solid var(--panel-border-2);
+  border-radius: var(--r-sm);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.import-url:focus {
+  outline: none;
+  border-color: var(--class-accent, var(--accent-bright));
+  box-shadow: 0 0 0 3px var(--class-accent-softer, var(--accent-softer));
+}
+.import-url::placeholder { color: var(--muted-dim); }
+.import-url:disabled { opacity: 0.6; cursor: progress; }
+.import-btn { flex: 0 0 auto; padding-left: 18px; padding-right: 18px; }
+.import-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-soft);
+  background: var(--panel-soft);
+  border: 1px solid var(--panel-border-2);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  letter-spacing: 0.01em;
+}
+.import-status.error {
+  color: var(--wrong);
+  background: rgba(255, 107, 107, 0.08);
+  border-color: rgba(255, 107, 107, 0.30);
+}
+.import-status-spinner { font-size: 16px; }
+.import-status.error .import-status-spinner { display: none; }
+/* `display: flex` above would shadow the browser's `[hidden]`. */
+.import-status[hidden] { display: none; }
+
 /* Pass 13: per-lecture quiz action lives inside the session-row link.
    The button is a glass pill that sits aligned right; clicking it
    cancels the row's anchor activation (history.js) and navigates to

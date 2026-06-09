@@ -102,3 +102,104 @@ if (colorInput && className) {
     }
   });
 }
+
+
+// ---- YouTube import (Pass 14) ---------------------------------------------
+//
+// POST the URL → get a job_id → poll /import_status/<id> every 1.5s for
+// stage updates. On "done", navigate to the resulting session's quiz view.
+// On "error", show the friendly server-supplied message and re-enable the
+// form. The background work happens server-side; this is just UI plumbing.
+
+const importForm = document.getElementById("import-form");
+const importUrlInput = document.getElementById("import-url");
+const importBtn = document.querySelector(".import-btn");
+const importStatus = document.getElementById("import-status");
+const importStatusStage = document.getElementById("import-status-stage");
+
+const IMPORT_POLL_MS = 1500;
+
+function showImportStatus(text, isError) {
+  if (!importStatus) return;
+  importStatus.hidden = false;
+  importStatus.classList.toggle("error", Boolean(isError));
+  if (importStatusStage) importStatusStage.textContent = text;
+}
+
+function lockImportForm(locked) {
+  if (importBtn) {
+    importBtn.disabled = locked;
+    importBtn.textContent = locked ? "Importing…" : "Import";
+  }
+  if (importUrlInput) importUrlInput.disabled = locked;
+}
+
+async function pollImportJob(jobId) {
+  // Poll forever (server timeouts aside) — caption jobs finish in seconds,
+  // audio jobs take minutes. The user can navigate away or refresh; the
+  // background job continues regardless.
+  while (true) {
+    let data;
+    try {
+      const res = await fetch(`/import_status/${encodeURIComponent(jobId)}`);
+      data = await res.json();
+    } catch (err) {
+      showImportStatus("Lost connection — retrying…", true);
+      await new Promise((r) => setTimeout(r, IMPORT_POLL_MS));
+      continue;
+    }
+    if (!data.ok) {
+      showImportStatus(data.error || "Unknown job.", true);
+      lockImportForm(false);
+      return;
+    }
+    if (data.status === "error") {
+      showImportStatus(data.error || "Import failed.", true);
+      lockImportForm(false);
+      return;
+    }
+    if (data.status === "done") {
+      showImportStatus("Done — opening quiz…", false);
+      if (data.result && data.result.quiz_url) {
+        // Brief delay so the "Done" line is visible before navigation.
+        setTimeout(() => { window.location = data.result.quiz_url; }, 300);
+      } else {
+        lockImportForm(false);
+      }
+      return;
+    }
+    // Running — surface the latest stage.
+    showImportStatus(data.stage || "Working…", false);
+    await new Promise((r) => setTimeout(r, IMPORT_POLL_MS));
+  }
+}
+
+if (importForm) {
+  importForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const url = (importUrlInput.value || "").trim();
+    if (!url) return;
+    lockImportForm(true);
+    showImportStatus("Starting…", false);
+    try {
+      const res = await fetch(
+        `/class/${encodeURIComponent(className)}/import`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+        },
+      );
+      const data = await res.json();
+      if (!data.ok) {
+        showImportStatus(data.error || "Could not start import.", true);
+        lockImportForm(false);
+        return;
+      }
+      pollImportJob(data.job_id);
+    } catch (err) {
+      showImportStatus("Could not reach server.", true);
+      lockImportForm(false);
+    }
+  });
+}

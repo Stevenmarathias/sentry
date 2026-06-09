@@ -6,3 +6,9 @@ openai-whisper>=20231117
 sounddevice>=0.4.6
 numpy>=1.24.0
 reportlab>=4.0.0
+# Pass 14 — YouTube import. yt-dlp is intentionally unpinned so a
+# `pip install -U` picks up YouTube-frontend fixes; youtube-transcript-api
+# is the primary caption path with a yt-dlp VTT fallback. ffmpeg is a
+# system dependency (brew install ffmpeg).
+yt-dlp>=2024.0.0
+youtube-transcript-api>=0.6.0
