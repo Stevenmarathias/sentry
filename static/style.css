@@ -978,12 +978,15 @@ button.danger:hover {
      height because of grid row-tracks sizing to the tallest item. */
 }
 
-/* Override the solid .panel look for class cards — they're floating
-   interactive surfaces, so they get the glass treatment.
+/* Pass 12: cards switch from glass to solid panels per the approved
+   mockup — translucent grey on the dark gradient was reading as
+   washed-out / disabled. Now they're a solid near-black with a
+   hairline white border, raising the cards above the background
+   without the glass blur (which had nothing to refract behind a solid
+   fill anyway).
 
-   Pass 10 padding bump: vertical stats need extra breathing room so the
-   name + 3 stat lines never feel cramped. Inner gap stays small (8px)
-   so name and stat block read as one tight visual unit.
+   Pass 10 padding bump: vertical stats need breathing room so the name
+   and three stat lines never feel cramped.
 
    Pass 11: each card gets a left accent stripe (::before) coloured from
    the inline `--card-stripe-color` custom property, plus a staggered
@@ -994,11 +997,11 @@ button.danger:hover {
   flex-direction: column;
   gap: 8px;
   padding: 18px 20px 20px 22px;     /* extra left to clear the stripe */
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-shadow);
+  background: var(--panel);                          /* solid #0c1220 */
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 8px 28px -10px rgba(0, 0, 0, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.32);
   transition: transform var(--t-base), box-shadow var(--t-base),
               border-color var(--t-base), background var(--t-base);
   position: relative;
@@ -1028,10 +1031,12 @@ button.danger:hover {
   to   { opacity: 1; transform: none; }
 }
 .class-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--glass-border-2);
-  background: var(--glass-bg-hover);
-  box-shadow: var(--glass-shadow-lift);
+  transform: translateY(-3px);
+  border-color: rgba(255, 255, 255, 0.16);
+  background: #0f1730;                               /* +brightness on lift */
+  box-shadow:
+    0 16px 40px -12px rgba(0, 0, 0, 0.65),
+    0 4px 14px rgba(0, 0, 0, 0.30);
 }
 
 /* Existing-class cards are whole-card clickable (navigate to the
@@ -1051,12 +1056,21 @@ button.danger:hover {
   /* No bottom margin — the next sibling (.class-card-meta) gets the
      6px row gap from the parent flex column. */
 }
-/* Pass 10: the class name is the dominant element on the card —
-   noticeably larger and brighter than the stats below. The arrow
-   uses an em-relative size so it scales with the heading and stays
-   in proportion if the heading size is tuned later. */
-.class-card-name {
+/* Pass 12: the class name is the dominant element on the card —
+   noticeably larger and brighter than the stats below. The selector
+   `h2.class-card-name` is intentional: `.panel h2` (Pass 6's section-
+   heading treatment — 11px uppercase muted) has specificity (0,1,1)
+   and otherwise wins against the bare `.class-card-name` (0,1,0),
+   which is why these names were rendering small and grey. Adding the
+   element prefix bumps this rule to (0,1,1), ties with `.panel h2`,
+   and wins by source-order. Every property the section-heading rule
+   sets is explicitly re-declared here so nothing leaks in. */
+h2.class-card-name {
   flex: 1 1 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  margin: 0;                       /* kill .panel h2's margin-bottom */
   font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.015em;
@@ -1084,11 +1098,12 @@ button.danger:hover {
   text-shadow: 0 0 8px var(--accent-glow);
 }
 
-/* Stacked stats — three short muted lines sit below the name and
-   visibly recede behind it (smaller, lower contrast, mono so the
-   numbers align). A <dl> for semantics; the inner <div>s are styled
-   as stat rows rather than dt/dd pairs because each stat is a single
-   string. */
+/* Stacked stats — three short muted lines below the name. Pass 12
+   raises their contrast from the global --muted token (#6e7689) so
+   they're clearly legible without competing with the name above.
+   The third row ("Last used: …") gets a half-step dimmer treatment
+   so it reads as auxiliary metadata, not equal-weight with the
+   sessions / concepts counts. */
 .class-card-stats {
   display: flex;
   flex-direction: column;
@@ -1096,10 +1111,15 @@ button.danger:hover {
 }
 .class-card-stat {
   font-size: 13px;
-  color: var(--muted);
+  color: #9aa6c0;
   font-family: var(--font-mono);
   letter-spacing: 0.01em;
   line-height: 1.45;
+}
+.class-card-stat:nth-child(3) {
+  /* Only matches in the populated 3-stat layout; the 0-session
+     fallback's single .empty-stat is :nth-child(1) and stays italic. */
+  color: #6b7794;
 }
 .class-card-stat.empty-stat {
   font-style: italic;
