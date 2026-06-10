@@ -1783,6 +1783,233 @@ def generate_concept_explanation(class_name: str, concept: dict) -> dict:
         return {"explanation": None, "error": str(exc)}
 
 
+# ---- Concept relationships: per-class graph edges (Pass 16) -----------------
+#
+# A separate Claude pass over the class's concept list that asks for
+# meaningful pairwise relationships ("technique for the same goal",
+# "person authored framework", "claim supports claim"). The edges are
+# stored on disk in sessions/<class>/relationships.json — deliberately
+# NOT inside concepts.json, which stays the source of truth for the
+# concepts themselves. This pass is data only; the graph visualization
+# is a separate later pass.
+
+CONCEPT_RELATIONSHIPS_SYSTEM_PROMPT = (
+    "You are Sentry's concept-graph builder. You will be given a class's "
+    "accumulated concept memory — every concept the class has covered, "
+    "each with a category and a one-line brief definition.\n\n"
+    "Your job: identify which pairs of concepts are MEANINGFULLY related "
+    "and return them as a JSON list of directed edges. Meaningful means "
+    "the relationship is substantive — e.g. \"both are techniques for the "
+    "same goal\", \"this person authored this framework\", \"this claim "
+    "is evidence for that one\", \"this term is a component of that "
+    "framework\", \"this technique addresses this claim\". Do NOT link "
+    "concepts merely because they appeared in the same lecture or share "
+    "general subject matter.\n\n"
+    "Rules — these are strict:\n"
+    "- Return ONLY valid JSON in the schema, no prose, no markdown fences.\n"
+    "- Each edge has fields: from, to, reason.\n"
+    "- `from` and `to` must be EXACT concept names from the provided list "
+    "(byte-for-byte, including case and punctuation).\n"
+    "- No self-links (from != to).\n"
+    "- No duplicate pairs — treat undirected pairs as the same edge "
+    "(A->B and B->A together is a duplicate).\n"
+    "- `reason` is a short phrase (10 words or so) that names the "
+    "relationship in concrete terms, not generic filler like \"related to\".\n"
+    "- Quality over quantity. A class with 10 concepts might have 8-15 "
+    "meaningful edges, not 45. If two concepts have no real connection, "
+    "leave them out.\n"
+    "- If the concept list is too small or too disjoint to produce real "
+    "edges, return an empty array."
+)
+
+CONCEPT_RELATIONSHIPS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from":   {"type": "string"},
+                    "to":     {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["from", "to", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["edges"],
+    "additionalProperties": False,
+}
+
+
+def _strip_code_fences(text: str) -> str:
+    """Defensive JSON unwrap: some models still emit ```json ... ``` even
+    under a strict schema. Strip a single leading/trailing fence if found."""
+    s = (text or "").strip()
+    if s.startswith("```"):
+        # Drop the first line (``` or ```json) and the closing fence.
+        lines = s.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        s = "\n".join(lines).strip()
+    return s
+
+
+def _validate_and_dedupe_edges(raw_edges: list,
+                               concepts_by_norm: dict) -> list[dict]:
+    """Drop edges whose endpoints don't match real concepts (normalized);
+    drop self-links; collapse symmetric duplicates to a single edge.
+
+    `concepts_by_norm` maps normalize_concept(name) -> canonical name as it
+    appears in concepts.json. We snap the LLM's output back to those
+    canonical names so downstream consumers don't have to renormalise.
+    """
+    seen_pairs: set = set()
+    out: list[dict] = []
+    for raw in raw_edges or []:
+        if not isinstance(raw, dict):
+            continue
+        a_norm = normalize_concept(raw.get("from", ""))
+        b_norm = normalize_concept(raw.get("to", ""))
+        if not a_norm or not b_norm or a_norm == b_norm:
+            continue
+        if a_norm not in concepts_by_norm or b_norm not in concepts_by_norm:
+            continue
+        # Undirected dedup key: sorted endpoints.
+        key = tuple(sorted((a_norm, b_norm)))
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        reason = (raw.get("reason") or "").strip()
+        out.append({
+            "from":   concepts_by_norm[a_norm],
+            "to":     concepts_by_norm[b_norm],
+            "reason": reason,
+        })
+    return out
+
+
+def generate_concept_relationships(class_name: str) -> dict:
+    """One Claude pass over the class's concepts -> validated edge list.
+
+    Returns {"edges": [...], "concept_count": N, "error": str | None}.
+    Never raises — every failure path returns an explanatory error string
+    so the caller (route handler) can render it without a try/except.
+    """
+    class_dir = SESSIONS_DIR / class_name
+    if not class_dir.is_dir():
+        return {"edges": [], "concept_count": 0, "error": "Class not found."}
+
+    store = load_concepts(class_dir)
+    concepts = store.get("concepts", []) if store else []
+    if len(concepts) < 2:
+        return {
+            "edges": [],
+            "concept_count": len(concepts),
+            "error": "Not enough concepts to derive relationships yet.",
+        }
+
+    # Build the lookup once: normalized name -> canonical stored name.
+    by_norm = {
+        normalize_concept(c.get("name", "")): c.get("name", "")
+        for c in concepts
+        if c.get("name", "")
+    }
+
+    # Each concept gets one short bullet (name, category, most recent
+    # brief_definition) — exactly the shape the prompt asks for.
+    lines = []
+    for c in concepts:
+        name = c.get("name", "")
+        if not name:
+            continue
+        category = c.get("category", "other")
+        defn = ""
+        for occ in c.get("occurrences", []):
+            d = (occ.get("definition") or "").strip()
+            if d:
+                defn = d   # keep iterating; ends on the most-recent
+        lines.append(f"- ({category}) {name}: {defn or '(no definition recorded)'}")
+    concept_block = "\n".join(lines)
+    user_text = (
+        f"Class: {class_name}\n"
+        f"Concept list ({len(lines)} concepts):\n\n"
+        f"{concept_block}\n\n"
+        f"Identify the meaningful relationships now and return the JSON edge list."
+    )
+
+    try:
+        client = camera_worker.analyzer.client
+        message = client.messages.create(
+            model=MODEL_ID,
+            max_tokens=4000,
+            thinking={"type": "adaptive"},
+            system=CONCEPT_RELATIONSHIPS_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_text}],
+            output_config={
+                "format": {
+                    "type": "json_schema",
+                    "schema": CONCEPT_RELATIONSHIPS_SCHEMA,
+                },
+            },
+        )
+        text = next((b.text for b in message.content if b.type == "text"), "")
+    except Exception as exc:
+        return {
+            "edges": [],
+            "concept_count": len(concepts),
+            "error": f"API call failed: {exc}",
+        }
+
+    try:
+        parsed = json.loads(_strip_code_fences(text))
+        raw_edges = parsed.get("edges", []) if isinstance(parsed, dict) else []
+    except Exception as exc:
+        # Bad JSON: never write a corrupt file; surface the error to the
+        # caller so the route can return a 502-style payload.
+        return {
+            "edges": [],
+            "concept_count": len(concepts),
+            "error": f"Model returned unparseable JSON: {exc}",
+        }
+
+    edges = _validate_and_dedupe_edges(raw_edges, by_norm)
+    return {
+        "edges": edges,
+        "concept_count": len(concepts),
+        "error": None,
+    }
+
+
+def load_relationships(class_name: str) -> dict:
+    """Read sessions/<class>/relationships.json. Returns {} on absence,
+    corruption, or shape mismatch — callers treat all of those as "no
+    relationships yet" and never see a half-decoded blob."""
+    path = SESSIONS_DIR / class_name / "relationships.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("edges"), list):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def save_relationships(class_name: str, data: dict) -> None:
+    """Write the per-class relationships.json. Caller is responsible
+    for class_dir existing."""
+    path = SESSIONS_DIR / class_name / "relationships.json"
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
 # ---- Quiz PDF export (Pass 2B) -----------------------------------------------
 
 def build_quiz_pdf(quiz: dict, class_name: str, session_date: str, *,
@@ -3070,6 +3297,58 @@ def set_class_color(class_name: str):
         "ok": True,
         "accent_color": color,
         "variants": color_variants(color),
+    })
+
+
+@app.route("/class/<class_name>/relationships/generate", methods=["POST"])
+def class_relationships_generate(class_name: str):
+    """Pass 16: build the concept-relationship edge list via Claude and
+    persist it to sessions/<class>/relationships.json. Manual trigger;
+    auto-regeneration on new lectures is a later decision.
+    """
+    name = sanitize_class_name(class_name)
+    if not name or not (SESSIONS_DIR / name).is_dir():
+        return jsonify({"ok": False, "error": "Class not found."}), 404
+
+    result = generate_concept_relationships(name)
+    if result.get("error") and not result["edges"]:
+        # Distinguish soft "not enough concepts" from a real API/parse fail.
+        msg = result["error"]
+        status = 200 if "Not enough concepts" in msg else 502
+        return jsonify({
+            "ok": False,
+            "error": msg,
+            "concept_count": result["concept_count"],
+            "edges": [],
+        }), status
+
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "edges":        result["edges"],
+    }
+    save_relationships(name, payload)
+    return jsonify({
+        "ok": True,
+        "generated_at":  payload["generated_at"],
+        "concept_count": result["concept_count"],
+        "edge_count":    len(result["edges"]),
+        "edges":         result["edges"],
+    })
+
+
+@app.route("/class/<class_name>/relationships")
+def class_relationships(class_name: str):
+    """Return the stored edge list as JSON. Empty when generation hasn't
+    been run for this class yet. Read-only — does not call the API.
+    """
+    name = sanitize_class_name(class_name)
+    if not name or not (SESSIONS_DIR / name).is_dir():
+        return jsonify({"ok": False, "error": "Class not found."}), 404
+    data = load_relationships(name)
+    return jsonify({
+        "ok":           True,
+        "generated_at": data.get("generated_at", ""),
+        "edges":        data.get("edges", []),
     })
 
 
