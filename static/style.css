@@ -1785,6 +1785,38 @@ h2.class-card-name {
   letter-spacing: 0.02em;
 }
 
+/* Pass 18: toolbar in the page-head-row groups the map meta with the
+   Reset View button so they share a baseline. */
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.map-reset-btn {
+  flex: 0 0 auto;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-pill);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+  cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast),
+              border-color var(--t-fast);
+}
+.map-reset-btn:hover,
+.map-reset-btn:focus-visible {
+  color: var(--accent-bright);
+  background: var(--glass-bg-hover);
+  border-color: var(--glass-border-2);
+}
+
 /* Category swatch row — each chip is colour + lowercase label. Wraps on
    narrow screens. */
 .map-legend {

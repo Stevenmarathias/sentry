@@ -1,4 +1,4 @@
-// Sentry per-class concept map (Pass 17).
+// Sentry per-class concept map (Pass 17, layout fixes Pass 18).
 //
 // Renders a D3 force-directed graph of:
 //   - one centre node = the class itself, themed with the class accent
@@ -7,6 +7,20 @@
 //   - faint "spokes" from centre to each concept so isolated concepts
 //     don't float free
 //   - relationship edges (Pass 16) drawn brighter, distinct from spokes
+//
+// Pass 18 layout additions:
+//   - Every visual element lives inside a single .map-zoom-root <g> that
+//     d3.zoom mutates via transform=. Scroll/pinch zooms; dragging the
+//     background pans; dragging a node keeps its Pass-17 behaviour
+//     because the zoom is filtered to exclude pointer events that
+//     started on .map-node.
+//   - Simulation is settled synchronously (one batch of ticks before
+//     the browser paints), then an auto-fit transform is computed
+//     from the final node bbox EXPANDED to cover label boxes, so the
+//     first thing the user sees is the entire graph centred and
+//     visible with comfortable padding.
+//   - forceCollide radius now includes each label's measured half-width,
+//     so horizontally adjacent labels no longer cram into each other.
 //
 // Click a concept node = navigate to the existing Pass 7 concept detail
 // page (full reuse of the in-depth explanation flow).
@@ -47,6 +61,7 @@ const emptyState = document.getElementById("map-empty");
 const generateBtn = document.getElementById("map-generate-btn");
 const emptyStatus = document.getElementById("map-empty-status");
 const legend = document.getElementById("map-legend");
+const resetBtn = document.getElementById("map-reset-btn");
 
 
 // ---- Empty state ----------------------------------------------------------
@@ -109,15 +124,16 @@ if (!concepts.length || !storedEdges.length) {
 // ---- Graph rendering -------------------------------------------------------
 
 function renderGraph() {
-  // Snapshot the canvas size now; d3 needs a numeric width/height for the
-  // centring force. The svg will resize via CSS but the simulation uses
-  // these snapshots throughout the lifetime of the page.
+  // Snapshot the canvas size now; the force simulation and the fit
+  // calculation both need numeric dimensions. The svg resizes via CSS
+  // but we use these snapshots for forces / zoom transforms.
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(640, rect.width);
   const height = Math.max(560, rect.height || 640);
   svg.attr("viewBox", `0 0 ${width} ${height}`)
      .attr("width", "100%")
-     .attr("height", height);
+     .attr("height", height)
+     .style("cursor", "grab");
 
   // Build the node + link arrays D3 will mutate in-place (x/y/vx/vy on
   // each node, source/target ref-swapping on each link).
@@ -148,11 +164,14 @@ function renderGraph() {
   // don't show swatches for buckets the class hasn't used.
   buildLegend(nodes);
 
-  // Layers (back to front): edges → nodes → labels. Drawing labels last
-  // keeps them on top of the strokes even when nodes overlap briefly.
-  const linkLayer = svg.append("g").attr("class", "link-layer");
-  const nodeLayer = svg.append("g").attr("class", "node-layer");
-  const labelLayer = svg.append("g").attr("class", "label-layer");
+  // Pass 18: a single zoom-root <g> holds every visual element. The
+  // d3.zoom() handler below mutates THIS group's transform — nothing
+  // else moves. Layer order: edges → nodes → labels (labels stay on
+  // top of edges even when nodes overlap briefly).
+  const zoomRoot = svg.append("g").attr("class", "map-zoom-root");
+  const linkLayer = zoomRoot.append("g").attr("class", "link-layer");
+  const nodeLayer = zoomRoot.append("g").attr("class", "node-layer");
+  const labelLayer = zoomRoot.append("g").attr("class", "label-layer");
 
   const link = linkLayer.selectAll("line")
     .data(links)
@@ -195,7 +214,7 @@ function renderGraph() {
     const imp = Math.max(0, Math.min(d.importance, 12));
     return 6 + imp * 0.9;       // 6 → 16.8 across imp 0 → 12
   }
-  const circle = node.append("circle")
+  node.append("circle")
     .attr("r", nodeRadius)
     .attr("fill", (d) => d.isCentre ? accent : colorFor(d.category))
     .attr("stroke", (d) => d.isCentre ? accent : "rgba(255,255,255,0.18)")
@@ -227,40 +246,166 @@ function renderGraph() {
     .attr("text-anchor", "middle")
     .text((d) => d.name);
 
-  // ---- Force simulation ----
+  // ---- Label-aware collision sizing (Pass 18) ----
   //
-  // Tuning notes:
-  //   - charge: strong negative repulsion so dense clusters separate
-  //   - link distance: short on relationship edges (they're the spiderweb;
-  //     should pull connected concepts together) and longer + much weaker
-  //     on spokes (centring force without dragging connected clusters
-  //     toward the centre)
-  //   - x/y centring force keeps the whole thing on the canvas
+  // forceCollide is purely radial, but our labels sit BELOW each node,
+  // so two nodes that are vertically near share a collision band and
+  // their labels also share a horizontal band. Measuring each label's
+  // rendered width and using HALF of it as a horizontal padding budget
+  // is a cheap proxy for "don't let labels touch". The labels are
+  // already rendered above, so getComputedTextLength is exact.
+  const labelHalfWidths = new Map();
+  let maxLabelHalfWidth = 0;
+  labelLayer.selectAll("text").each(function (d) {
+    let w = 80;
+    try { w = this.getComputedTextLength(); } catch (e) { /* node not in DOM */ }
+    const half = w / 2;
+    labelHalfWidths.set(d.id, half);
+    if (half > maxLabelHalfWidth) maxLabelHalfWidth = half;
+  });
+
+  function collideRadius(d) {
+    if (d.isCentre) return 36;
+    const r = nodeRadius(d);
+    const lhw = labelHalfWidths.get(d.id) || 40;
+    // Take the larger of: node-radius + a small gap, OR label-half
+    // width + a small gap. Either constraint pushes nodes far enough
+    // apart that neither circles nor labels can crash.
+    return Math.max(r + 10, lhw + 6);
+  }
+
+  // ---- Force simulation (Pass 18 — tuned for spread) ----
+  //
+  // Notes:
+  //   - charge: stronger repulsion than Pass 17 so ~30-node graphs
+  //     fill the canvas instead of bunching
+  //   - link distance: rel-edges (the spiderweb) stay short to keep
+  //     connected concepts clustered; centre-spokes are long+weak so
+  //     they anchor outliers without dragging cluster centroids
+  //   - centre force: low-strength gravity toward the canvas centre
+  //     keeps the cloud from drifting off to one corner over many
+  //     ticks (the auto-fit at the end then re-centres for the user)
+  //   - collide: label-aware (above)
+  const cx = width / 2, cy = height / 2;
   const simulation = d3.forceSimulation(nodes)
     .force("charge",
-      d3.forceManyBody().strength((d) => d.isCentre ? -400 : -240))
+      d3.forceManyBody().strength((d) => d.isCentre ? -600 : -340))
     .force("link",
       d3.forceLink(links).id((d) => d.id)
-        .distance((d) => d.kind === "rel" ? 90 : 220)
-        .strength((d) => d.kind === "rel" ? 0.6 : 0.05))
-    .force("centre", d3.forceCenter(width / 2, height / 2))
+        .distance((d) => d.kind === "rel" ? 95 : 210)
+        .strength((d) => d.kind === "rel" ? 0.65 : 0.04))
+    .force("centre", d3.forceCenter(cx, cy).strength(0.07))
     .force("collide",
-      d3.forceCollide().radius((d) => nodeRadius(d) + 14))
-    .alpha(1)
-    .on("tick", () => {
-      link
-        .attr("x1", (d) => d.source.x)
-        .attr("y1", (d) => d.source.y)
-        .attr("x2", (d) => d.target.x)
-        .attr("y2", (d) => d.target.y);
-      node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-      label
-        .attr("x", (d) => d.x)
-        .attr("y", (d) => d.y + nodeRadius(d) + 12);
-    });
+      d3.forceCollide().radius(collideRadius).iterations(2))
+    .alpha(1);
 
-  // Idle the simulation after it settles. D3 handles this automatically
-  // via alpha decay; we just don't restart on every interaction.
+  // ---- Settle synchronously, then auto-fit ----
+  //
+  // Run a fixed batch of ticks in one JS frame so the browser doesn't
+  // paint until the simulation has cooled. Then compute the fit
+  // transform from the final positions (and the measured label box)
+  // and apply it through d3.zoom so the user sees the entire graph
+  // centred and at the right scale on first paint.
+  const SETTLE_TICKS = 360;
+  for (let i = 0; i < SETTLE_TICKS; i++) simulation.tick();
+  simulation.alpha(0);
+  redraw();
+
+  // ---- Zoom + pan ----
+  //
+  // Standard d3.zoom on the svg, applied to the zoomRoot transform.
+  // The .filter excludes pointer events whose target lives inside a
+  // .map-node so dragging a node doesn't ALSO pan; node-drag wins.
+  // Double-click is filtered out so accidental dbl-clicks don't snap
+  // the user to an unexpected zoom level.
+  const zoom = d3.zoom()
+    .scaleExtent([0.3, 4])
+    .filter((event) => {
+      if (event.type === "dblclick") return false;
+      if (event.type === "wheel") return true;
+      // Pointer events: only let zoom-pan handle them if they started
+      // on the background, not on a node or label.
+      const t = event.target;
+      if (t && t.closest && t.closest(".map-node")) return false;
+      return true;
+    })
+    .on("zoom", (event) => {
+      zoomRoot.attr("transform", event.transform);
+    });
+  svg.call(zoom)
+     // Background drag cursor cue.
+     .on("mousedown.cursor", function () { d3.select(this).style("cursor", "grabbing"); })
+     .on("mouseup.cursor",   function () { d3.select(this).style("cursor", "grab"); });
+
+  // Apply the initial auto-fit. computeFitTransform returns a
+  // d3.zoomIdentity-based transform; passing it through zoom.transform
+  // keeps the fitted view and any subsequent user gestures in the same
+  // coordinate system.
+  const initialFit = computeFitTransform();
+  svg.call(zoom.transform, initialFit);
+
+  // Reset-view button (Pass 18 optional nicety) — animates back to the
+  // initial fit. Re-computing each time accounts for nodes the user may
+  // have dragged in the meantime.
+  if (resetBtn) {
+    resetBtn.addEventListener("click", () => {
+      const t = computeFitTransform();
+      svg.transition().duration(360).call(zoom.transform, t);
+    });
+  }
+
+  // After the initial settle, hand off to live ticks so dragging a node
+  // smoothly reflows the rest. The auto-fit transform isn't re-applied
+  // on tick (that would yank the view around); the user can hit Reset
+  // View to re-centre.
+  simulation.on("tick", redraw);
+
+  // ---- helpers ----
+
+  function redraw() {
+    link
+      .attr("x1", (d) => d.source.x)
+      .attr("y1", (d) => d.source.y)
+      .attr("x2", (d) => d.target.x)
+      .attr("y2", (d) => d.target.y);
+    node.attr("transform", (d) => `translate(${d.x},${d.y})`);
+    label
+      .attr("x", (d) => d.x)
+      .attr("y", (d) => d.y + nodeRadius(d) + 12);
+  }
+
+  function computeFitTransform() {
+    // Bounding box of node positions, expanded per-node to cover the
+    // node radius AND the label that sits below it. The max label
+    // half-width (measured above) widens the horizontal extents so
+    // outermost-node labels never get clipped at the canvas edge.
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    for (const n of nodes) {
+      const r = nodeRadius(n);
+      const lhw = labelHalfWidths.get(n.id) || maxLabelHalfWidth;
+      // Horizontal: half-label extends past the node centre. Vertical:
+      // node radius up, then node radius + label baseline + label height
+      // (~12px) down.
+      minX = Math.min(minX, n.x - Math.max(r, lhw) - 4);
+      maxX = Math.max(maxX, n.x + Math.max(r, lhw) + 4);
+      minY = Math.min(minY, n.y - r - 4);
+      maxY = Math.max(maxY, n.y + r + 14 + 12);
+    }
+    const bbW = Math.max(1, maxX - minX);
+    const bbH = Math.max(1, maxY - minY);
+    // Padding inside the canvas so the graph never kisses the edge.
+    const padding = 28;
+    const rawScale = Math.min(
+      (width  - padding * 2) / bbW,
+      (height - padding * 2) / bbH,
+    );
+    // Clamp to the zoom scaleExtent so d3 doesn't reject the transform.
+    const scale = Math.max(0.3, Math.min(4, rawScale));
+    const tx = width  / 2 - (minX + bbW / 2) * scale;
+    const ty = height / 2 - (minY + bbH / 2) * scale;
+    return d3.zoomIdentity.translate(tx, ty).scale(scale);
+  }
 
   function dragStarted(event, d) {
     if (!event.active) simulation.alphaTarget(0.3).restart();

@@ -27,13 +27,26 @@
 
     <div class="page-head-row">
       <p class="section-label">Concept map</p>
-      {% if generated_at %}
-      <span class="map-meta">
-        {{ edges | length }} link{{ '' if edges|length == 1 else 's' }}
-        · {{ concepts | length }} concept{{ '' if concepts|length == 1 else 's' }}
-        · updated {{ generated_at[:10] }}
-      </span>
-      {% endif %}
+      <div class="map-toolbar">
+        {% if generated_at %}
+        <span class="map-meta">
+          {{ edges | length }} link{{ '' if edges|length == 1 else 's' }}
+          · {{ concepts | length }} concept{{ '' if concepts|length == 1 else 's' }}
+          · updated {{ generated_at[:10] }}
+        </span>
+        {% endif %}
+        <!-- Pass 18: after panning/zooming around the graph, snap back to
+             the auto-fit transform. The button is wired only when there
+             are edges to draw; the empty-state path never sees it. -->
+        {% if edges %}
+        <button type="button"
+                id="map-reset-btn"
+                class="map-reset-btn"
+                aria-label="Reset view">
+          ↺ Reset view
+        </button>
+        {% endif %}
+      </div>
     </div>
 
     <!-- Category legend — small mono chips, one per category present in
