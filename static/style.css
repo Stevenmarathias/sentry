@@ -1864,26 +1864,36 @@ h2.class-card-name {
 .map-canvas[hidden] { display: none; }
 #map-svg { display: block; width: 100%; height: 100%; }
 
-/* Edges. Spokes from the centre are barely-there so isolated concepts
-   read as "still anchored" without competing with the relationship
-   graph; relationship edges are noticeably brighter — the spiderweb. */
+/* Edges (Pass 19 contrast pass).
+   The spiderweb is the point of the feature, so relationship edges
+   become clearly visible while centre spokes drop to a near-invisible
+   "suggestion" so the eye sees clusters, not a star burst.
+   - .map-edge-spoke at 0.025 alpha is just a faint hint the concept is
+     still anchored to the class; it doesn't compete for attention.
+   - .map-edge-rel at 0.42 alpha / 1.6px stroke reads as the actual
+     graph structure.
+   Opacity / stroke / stroke-width get short transitions so the hover-
+   highlight cascade glides cleanly instead of snapping. */
+.map-edge {
+  transition: opacity 140ms ease, stroke 140ms ease,
+              stroke-width 140ms ease;
+}
 .map-edge-spoke {
-  stroke: rgba(255, 255, 255, 0.04);
+  stroke: rgba(255, 255, 255, 0.025);
   stroke-width: 1;
   pointer-events: none;
 }
 .map-edge-rel {
-  stroke: rgba(255, 255, 255, 0.20);
-  stroke-width: 1.4;
-  /* No transition on stroke — d3's tick rate redraws so often that any
-     transition just flickers. The brightness boost on hover comes from
-     the native <title> tooltip, not a stroke change. */
+  stroke: rgba(255, 255, 255, 0.42);
+  stroke-width: 1.6;
 }
 
-/* Labels — slightly larger than the stat text on cards because they
-   sit next to dense graph geometry and have to stay legible. */
+/* Labels — calmer at rest (Pass 19) so the default view isn't a wall
+   of text; hover focus brightens them in the active neighbourhood.
+   The opacity ramp uses fill swap rather than opacity at rest so
+   labels stay crisp; opacity only kicks in during the hover cascade. */
 .map-label {
-  fill: var(--text-soft);
+  fill: var(--muted);
   font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 500;
@@ -1892,11 +1902,42 @@ h2.class-card-name {
   stroke: var(--panel);             /* outline against busy edges */
   stroke-width: 3;
   stroke-linejoin: round;
+  transition: fill 140ms ease, opacity 140ms ease,
+              font-weight 140ms ease;
 }
 .map-label-centre {
   fill: var(--text);
   font-size: 14px;
   font-weight: 600;
+}
+
+/* Node circles also fade smoothly with the highlight cascade. The
+   stroke transitions are kept short because the Pass-17 hover ring
+   uses d3.attr (which CSS opacity doesn't interfere with). */
+.map-node circle { transition: opacity 140ms ease; }
+
+/* Pass 19: hover-to-highlight neighbourhood cascade.
+   While the user is hovering a concept node, the svg gets the class
+   `is-highlighting`. Concepts in the active set (focused + direct
+   neighbours) wear `is-active`; relationship edges with the focused
+   node as one endpoint also wear `is-active`. The cascade below
+   makes everything else fade so the active subgraph pops without
+   yanking the layout. The centre node is intentionally not part of
+   the active set, so it dims to match the rest of the background. */
+#map-svg.is-highlighting .map-node:not(.is-active) circle { opacity: 0.18; }
+#map-svg.is-highlighting .map-label:not(.is-active)        { opacity: 0.15; }
+#map-svg.is-highlighting .map-edge:not(.is-active)         { opacity: 0.06; }
+
+#map-svg.is-highlighting .map-node.is-active circle { opacity: 1; }
+#map-svg.is-highlighting .map-label.is-active {
+  fill: var(--text);
+  font-weight: 600;
+  opacity: 1;
+}
+#map-svg.is-highlighting .map-edge-rel.is-active {
+  stroke: var(--accent-bright);
+  stroke-width: 2.2;
+  opacity: 1;
 }
 
 /* Node circles — d3 sets fill/stroke per-element. We only need a baseline

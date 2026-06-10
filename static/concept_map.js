@@ -1,4 +1,5 @@
-// Sentry per-class concept map (Pass 17, layout fixes Pass 18).
+// Sentry per-class concept map (Pass 17, layout fixes Pass 18,
+// contrast + hover-highlight Pass 19).
 //
 // Renders a D3 force-directed graph of:
 //   - one centre node = the class itself, themed with the class accent
@@ -160,6 +161,19 @@ function renderGraph() {
   }));
   const links = spokeLinks.concat(relLinks);
 
+  // Pass 19: adjacency from REL edges only, so hover-highlight surfaces
+  // the conceptual neighbourhood instead of "everything connects via the
+  // class". Built BEFORE the force simulation initialises so the
+  // {source,target} fields are still string ids — once the simulation
+  // runs, d3.forceLink swaps them to live node objects.
+  const adjacency = new Map(nodes.map((n) => [n.id, new Set()]));
+  for (const e of storedEdges) {
+    if (adjacency.has(e.from) && adjacency.has(e.to)) {
+      adjacency.get(e.from).add(e.to);
+      adjacency.get(e.to).add(e.from);
+    }
+  }
+
   // Build a category legend from the categories actually present so we
   // don't show swatches for buckets the class hasn't used.
   buildLegend(nodes);
@@ -220,21 +234,61 @@ function renderGraph() {
     .attr("stroke", (d) => d.isCentre ? accent : "rgba(255,255,255,0.18)")
     .attr("stroke-width", (d) => d.isCentre ? 2 : 1);
 
-  // Subtle glow ring on hover so the tappable area is obvious without
-  // adding shadow chrome to every node.
+  // Subtle glow ring on hover + neighbourhood highlight (Pass 19).
+  // The CSS class `is-highlighting` on the svg gates the dim-everything-
+  // except-the-neighbourhood cascade; `is-active` on each node, edge,
+  // and label marks the members of the active neighbourhood.
   node.filter((d) => !d.isCentre)
-    .on("mouseenter", function () {
+    .on("mouseenter", function (event, d) {
       d3.select(this).select("circle")
         .transition().duration(120)
         .attr("stroke", "rgba(255,255,255,0.55)")
         .attr("stroke-width", 2);
+      applyFocus(d.id);
     })
     .on("mouseleave", function () {
       d3.select(this).select("circle")
         .transition().duration(160)
         .attr("stroke", "rgba(255,255,255,0.18)")
         .attr("stroke-width", 1);
+      clearFocus();
     });
+
+  function endpointId(end) {
+    // After d3.forceLink wires up the simulation, `source` and `target`
+    // are live node objects; before that they're strings. Either form
+    // is safe to ask for `.id`.
+    return (end && typeof end === "object") ? end.id : end;
+  }
+
+  function applyFocus(focusedId) {
+    const neighbours = adjacency.get(focusedId) || new Set();
+    // The focused node itself + its direct neighbours form the
+    // "active" set whose circles/labels stay full-opacity. Everyone
+    // else fades via CSS.
+    const active = new Set([focusedId, ...neighbours]);
+
+    node.classed("is-active", (n) => active.has(n.id));
+    label.classed("is-active", (n) => active.has(n.id));
+    // Only highlight edges where one endpoint IS the focused node —
+    // those are the relationships the user is exploring. Edges between
+    // two of focused's neighbours aren't part of the hovered question
+    // ("what does X connect to?"), so they stay dimmed.
+    link.classed("is-active", (l) => {
+      if (l.kind !== "rel") return false;
+      const a = endpointId(l.source);
+      const b = endpointId(l.target);
+      return a === focusedId || b === focusedId;
+    });
+    svg.classed("is-highlighting", true);
+  }
+
+  function clearFocus() {
+    svg.classed("is-highlighting", false);
+    node.classed("is-active", false);
+    label.classed("is-active", false);
+    link.classed("is-active", false);
+  }
 
   // Label: concept name sits just below the node. The label layer is the
   // last child so labels paint over any overlapping strokes.
