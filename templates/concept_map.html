@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentry — {{ class_name }} concept map</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<!-- Pass 17 inherits Pass 11's body-level themed CSS vars so the centre
+     node and accent stroke reach for var(--class-accent). -->
+<body class="themed-page"
+      data-class-name="{{ class_name }}"
+      style="--class-accent: {{ accent.hex }};
+             --class-accent-soft: {{ accent.soft }};
+             --class-accent-softer: {{ accent.softer }};
+             --class-accent-border: {{ accent.border }};
+             --class-accent-glow: {{ accent.glow }};">
+  <main class="app map-app">
+    <header>
+      <div class="title-block">
+        <h1>Sentry</h1>
+        <span class="class-tag is-themed">{{ class_name }}</span>
+      </div>
+      <a class="link"
+         href="{{ url_for('class_home', class_name=class_name) }}">← Back</a>
+    </header>
+
+    <div class="page-head-row">
+      <p class="section-label">Concept map</p>
+      {% if generated_at %}
+      <span class="map-meta">
+        {{ edges | length }} link{{ '' if edges|length == 1 else 's' }}
+        · {{ concepts | length }} concept{{ '' if concepts|length == 1 else 's' }}
+        · updated {{ generated_at[:10] }}
+      </span>
+      {% endif %}
+    </div>
+
+    <!-- Category legend — small mono chips, one per category present in
+         the class's concepts. Synced with CATEGORY_COLORS in
+         concept_map.js so the swatches always match the rendered nodes. -->
+    <ul id="map-legend" class="map-legend" aria-label="Category legend"></ul>
+
+    <!-- Main canvas. The D3 svg fills this. When there are no edges
+         yet, the canvas hides and the empty-state below takes over. -->
+    <div id="map-canvas" class="map-canvas">
+      <svg id="map-svg" aria-label="Concept map"></svg>
+    </div>
+
+    <!-- Empty-state. Pass 6 [hidden] gotcha: `.map-empty` is a flex
+         column, so the matching `.map-empty[hidden] { display: none }`
+         in style.css keeps the attribute honest. -->
+    <div id="map-empty" class="map-empty panel" hidden>
+      <p class="map-empty-headline">No concept map yet.</p>
+      <p class="map-empty-body">
+        Sentry hasn't generated relationships for this class yet. The
+        graph needs at least a couple concepts (more is better) — once
+        ready, a single Claude pass derives the meaningful links between
+        them and saves the result for later.
+      </p>
+      <button type="button" id="map-generate-btn" class="primary">
+        Generate map
+      </button>
+      <p class="map-empty-status" id="map-empty-status" hidden></p>
+    </div>
+  </main>
+
+  <!-- D3 from cdnjs (matching the version the spec calls out). No
+       Subresource-Integrity attribute — a hash that goes stale would
+       silently block the script, and the CDN host is the trust anchor
+       here. The inline JSON payload below is read by concept_map.js,
+       avoiding an extra round-trip on page load. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"
+          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script id="map-data" type="application/json">
+    {{ {
+      "class_name": class_name,
+      "concepts":   concepts,
+      "edges":      edges
+    } | tojson }}
+  </script>
+  <script src="{{ url_for('static', filename='concept_map.js') }}"></script>
+</body>
+</html>

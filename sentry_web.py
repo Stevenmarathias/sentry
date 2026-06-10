@@ -3300,6 +3300,45 @@ def set_class_color(class_name: str):
     })
 
 
+@app.route("/class/<class_name>/map")
+def class_map(class_name: str):
+    """Pass 17: render the per-class concept map.
+
+    Reads the Pass 16 relationships.json on demand and embeds it in the
+    page along with the concept list and the class's accent color, so
+    the D3 graph initializes from one server-rendered payload — no
+    extra round-trip on load. Empty edges drop the page into an empty-
+    state with a Generate button that POSTs to the existing
+    /relationships/generate route.
+    """
+    name = sanitize_class_name(class_name)
+    class_dir = SESSIONS_DIR / name
+    if not name or not class_dir.is_dir():
+        return redirect(url_for("landing"))
+
+    store = load_concepts(class_dir)
+    concept_rows = []
+    for c in (store.get("concepts", []) if store else []):
+        concept_rows.append({
+            "name":       c.get("name", ""),
+            "category":   c.get("category", "other"),
+            "importance": c.get("importance_score", 0.0),
+        })
+
+    rel = load_relationships(name)
+    edges = rel.get("edges", []) if rel else []
+
+    accent_hex = get_class_accent_color(class_dir, name)
+    return render_template(
+        "concept_map.html",
+        class_name=name,
+        concepts=concept_rows,
+        edges=edges,
+        generated_at=rel.get("generated_at", "") if rel else "",
+        accent=color_variants(accent_hex),
+    )
+
+
 @app.route("/class/<class_name>/relationships/generate", methods=["POST"])
 def class_relationships_generate(class_name: str):
     """Pass 16: build the concept-relationship edge list via Claude and

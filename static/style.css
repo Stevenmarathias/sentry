@@ -1764,6 +1764,147 @@ h2.class-card-name {
 }
 
 /* ======================================================================
+   Concept map (Pass 17) — /class/<name>/map
+
+   D3 force-directed graph of the class's concepts. The centre node is
+   the class itself, themed with the class accent (Pass 11). Concept
+   nodes are coloured by category from a fixed palette synced with
+   concept_map.js. Spokes from centre are deliberately faint so the
+   relationship edges read as the actual structure.
+   ====================================================================== */
+
+/* The map page wants more vertical room than the standard `.app`
+   container — the graph itself eats most of the height. Widen the
+   shell so node clusters have room to settle without crowding. */
+.map-app { max-width: 980px; padding-bottom: 32px; }
+
+.map-meta {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+/* Category swatch row — each chip is colour + lowercase label. Wraps on
+   narrow screens. */
+.map-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 0;
+  margin-top: -8px;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-transform: lowercase;
+}
+.legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.10) inset;
+}
+
+/* Canvas — solid panel with a subtle radial wash so the graph reads
+   as a contained surface rather than floating on the body gradient. */
+.map-canvas {
+  position: relative;
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(ellipse 60% 70% at 50% 35%,
+                    rgba(47, 123, 255, 0.07), transparent 70%),
+    var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 16px 40px -16px rgba(0, 0, 0, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.30);
+  overflow: hidden;
+  min-height: 560px;
+}
+.map-canvas[hidden] { display: none; }
+#map-svg { display: block; width: 100%; height: 100%; }
+
+/* Edges. Spokes from the centre are barely-there so isolated concepts
+   read as "still anchored" without competing with the relationship
+   graph; relationship edges are noticeably brighter — the spiderweb. */
+.map-edge-spoke {
+  stroke: rgba(255, 255, 255, 0.04);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.map-edge-rel {
+  stroke: rgba(255, 255, 255, 0.20);
+  stroke-width: 1.4;
+  /* No transition on stroke — d3's tick rate redraws so often that any
+     transition just flickers. The brightness boost on hover comes from
+     the native <title> tooltip, not a stroke change. */
+}
+
+/* Labels — slightly larger than the stat text on cards because they
+   sit next to dense graph geometry and have to stay legible. */
+.map-label {
+  fill: var(--text-soft);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  pointer-events: none;             /* let clicks fall through to the node */
+  paint-order: stroke;
+  stroke: var(--panel);             /* outline against busy edges */
+  stroke-width: 3;
+  stroke-linejoin: round;
+}
+.map-label-centre {
+  fill: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Node circles — d3 sets fill/stroke per-element. We only need a baseline
+   focus ring and the click affordance from the JS-set cursor. */
+.map-node:focus-visible circle {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 3px;
+}
+
+/* Empty state — solid reading panel, primary "Generate map" CTA. The
+   panel layout (display: flex column) would otherwise shadow `hidden`. */
+.map-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 24px;
+}
+.map-empty[hidden] { display: none; }
+.map-empty-headline {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.005em;
+}
+.map-empty-body {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-soft);
+  max-width: 60ch;
+}
+.map-empty-status {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+.map-empty-status.error { color: var(--wrong); }
+.map-empty-status[hidden] { display: none; }
+
+/* ======================================================================
    Per-class overview (Pass 8) — /class/<name>
 
    One hero "Start Session" card (glass, the obvious primary action), a

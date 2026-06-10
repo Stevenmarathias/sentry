@@ -126,6 +126,15 @@
           Past sessions — open one to revisit its transcript and quiz.
         </span>
       </a>
+      <a class="action-tile"
+         href="{{ url_for('class_map', class_name=class_name) }}">
+        <span class="action-icon">🕸️</span>
+        <span class="action-name">Concept map</span>
+        <span class="action-meta">
+          Spiderweb view of how this class's concepts relate to each
+          other — click a node for its in-depth explanation.
+        </span>
+      </a>
     </nav>
 
     <!-- Pass 11: per-class colour control. The native <input type="color">
