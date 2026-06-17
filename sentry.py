@@ -32,7 +32,7 @@ CHANGE_THRESHOLD = float(os.environ.get("SENTRY_CHANGE_THRESHOLD", "2.0"))
 STABILITY_FRAMES = 30        # consecutive low-diff frames to confirm settled
 COOLDOWN_SECONDS = 8.0       # min seconds between auto-triggered analyses
 AUDIO_SAMPLE_RATE = 16000
-MODEL_ID = "claude-opus-4-7"
+MODEL_ID = "claude-sonnet-4-6"
 WHISPER_MODEL = os.environ.get("SENTRY_WHISPER_MODEL", "small")
 MAX_IMAGE_DIM = 1568         # downscale longest edge before sending
 
