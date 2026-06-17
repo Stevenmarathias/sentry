@@ -37,6 +37,10 @@
     </p>
     {% endif %}
 
+    {# Pass D1: hide the live-capture entry in hosted mode. The YouTube
+       import section below stays — that's the only sensible ingest path
+       for a deployment with no camera/mic. #}
+    {% if not hosted %}
     <!-- Hero action: start a fresh session for this class. Same form fields
          the landing card used pre-Pass-8; submission still hits /start which
          tags the session to this class and redirects to the live view. -->
@@ -62,6 +66,7 @@
         <button type="submit" class="primary start-btn">Start Session</button>
       </form>
     </section>
+    {% endif %}
 
     <!-- Pass 14: import a lecture from YouTube. Tries captions first
          (instant); falls back to downloading audio and transcribing

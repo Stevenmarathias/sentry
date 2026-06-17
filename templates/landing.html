@@ -96,6 +96,11 @@
       </article>
       {% endfor %}
 
+      {# Pass D1: in hosted mode there's no camera/mic, so the create-and-start
+         flow has nowhere to go. Hide the "Create new class" card entirely —
+         hosted users create their first class via the YouTube import button
+         on the per-class overview (already reachable from the class grid). #}
+      {% if not hosted %}
       <!-- "Create new class" still does create-and-start inline. There's
            nothing to navigate to before the class exists, so this card
            keeps its inline form (mode + audio + Start). Sits at the end
@@ -121,6 +126,7 @@
           <button type="submit" class="primary">Start session</button>
         </form>
       </article>
+      {% endif %}
     </div>
   </main>
 

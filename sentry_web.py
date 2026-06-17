@@ -80,6 +80,134 @@ SLIDE_COOLDOWN_SECONDS = 3   # minimum gap between slide captures (skips brief o
 
 SESSIONS_DIR = Path(__file__).resolve().parent / "sessions"
 
+
+# ---- Deployment mode (Pass D1) ----------------------------------------------
+#
+# `SENTRY_HOSTED` flips the app into "running on a server somewhere" mode:
+#   * Live-capture routes (camera, mic, MJPEG, SSE bus, /analyze, pause/mode
+#     toggles, end_session, audio device listing) return a graceful "not
+#     available in the web version" message instead of touching hardware.
+#   * The YouTube-import path skips the Whisper audio fallback — captions only.
+#   * Templates hide the live-capture entry points so a web user isn't offered
+#     a feature that wouldn't work.
+#
+# `SENTRY_DAILY_API_CAP` is a hard daily counter on outbound Anthropic calls.
+# Every generate_* / classify / grade entrypoint hits `record_api_call()` first;
+# once the cap is exhausted, the next call raises APIQuotaExceeded and the route
+# surfaces a friendly "Daily limit reached" response without billing the key.
+# In-process and per-restart — fine for a single-worker pilot; switch to Redis
+# or similar before multi-worker.
+
+def _truthy_env(name: str) -> bool:
+    """True if `name` is set to anything other than 0/false/no/off (or empty)."""
+    val = os.environ.get(name, "").strip().lower()
+    return val not in ("", "0", "false", "no", "off")
+
+
+def is_hosted_mode() -> bool:
+    """Single source of truth for SENTRY_HOSTED. Read at call time, never
+    cached, so a test harness can flip the env between requests."""
+    return _truthy_env("SENTRY_HOSTED")
+
+
+# Local default is high enough to never bite the owner; hosted operators set
+# something modest (e.g. SENTRY_DAILY_API_CAP=100) to bound their bill.
+DEFAULT_LOCAL_DAILY_CAP = 100000
+DEFAULT_HOSTED_DAILY_CAP = 100
+
+
+def daily_api_cap() -> int:
+    """Resolve the active daily cap. Env var wins; otherwise mode-specific
+    default (hosted: 100, local: effectively unlimited)."""
+    raw = os.environ.get("SENTRY_DAILY_API_CAP", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return DEFAULT_HOSTED_DAILY_CAP if is_hosted_mode() else DEFAULT_LOCAL_DAILY_CAP
+
+
+class APIQuotaExceeded(RuntimeError):
+    """Raised when today's API call budget is spent. Routes catch and surface
+    a friendly message instead of bubbling a 500."""
+
+
+_api_quota_lock = threading.Lock()
+_api_quota_day: Optional[str] = None      # current UTC date string (YYYY-MM-DD)
+_api_quota_count: int = 0
+
+
+def _today_str() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def record_api_call() -> None:
+    """Reserve one slot in today's budget. Raises APIQuotaExceeded if full.
+
+    Called from inside every generate_* / classify / grade function right
+    before the Claude call, so a cached response doesn't consume budget.
+    Counter auto-resets each UTC day. Cost: one lock acquire — negligible
+    against a ~25–60s LLM call.
+    """
+    global _api_quota_day, _api_quota_count
+    cap = daily_api_cap()
+    with _api_quota_lock:
+        today = _today_str()
+        if _api_quota_day != today:
+            _api_quota_day = today
+            _api_quota_count = 0
+        if _api_quota_count >= cap:
+            raise APIQuotaExceeded(
+                f"Daily API limit reached ({cap} calls). Try again tomorrow."
+            )
+        _api_quota_count += 1
+
+
+def api_quota_status() -> dict:
+    """Snapshot of today's counter — handy for the hosted-mode response and
+    for any future /status endpoint."""
+    with _api_quota_lock:
+        return {
+            "day": _api_quota_day or _today_str(),
+            "used": _api_quota_count if _api_quota_day == _today_str() else 0,
+            "cap": daily_api_cap(),
+        }
+
+
+# Friendly response bodies for the two guard paths.
+HOSTED_LIVE_CAPTURE_MESSAGE = (
+    "Live capture isn't available in the web version — "
+    "import a YouTube link instead."
+)
+
+
+def _hosted_live_capture_response(json_response: bool = False):
+    """Graceful response for live-capture routes when SENTRY_HOSTED is set.
+
+    Returns JSON for XHR/POST endpoints, plain text + 503 for navigations.
+    Kept here so every guarded route renders the same wording.
+    """
+    if json_response:
+        return jsonify({
+            "ok": False,
+            "hosted": True,
+            "error": HOSTED_LIVE_CAPTURE_MESSAGE,
+        }), 503
+    return (HOSTED_LIVE_CAPTURE_MESSAGE, 503,
+            {"Content-Type": "text/plain; charset=utf-8"})
+
+
+def quota_exceeded_response(exc: APIQuotaExceeded, json_response: bool = False):
+    """Friendly 429 when today's API budget is gone. Matches the
+    live-capture-guard return shapes so route handlers stay symmetric."""
+    msg = (str(exc) or
+           "Daily limit reached — try again tomorrow.")
+    if json_response:
+        return jsonify({"ok": False, "quota_exceeded": True, "error": msg}), 429
+    return (msg, 429, {"Content-Type": "text/plain; charset=utf-8"})
+
+
 QUIZ_SYSTEM_PROMPT = (
     "You are Sentry, a study assistant. You are given TODAY'S lecture session "
     "log — board analyses and audio transcripts, each tagged with an HH:MM:SS "
@@ -1284,7 +1412,12 @@ def extract_concepts(session_markdown: str) -> list[dict]:
 
     Independent of quiz generation. Returns [] on any failure or empty result
     so a junk transcript never blocks the quiz.
+
+    Pass D1: the daily-cap check sits outside the try block so APIQuotaExceeded
+    propagates to the caller; the broad except inside is for transient API
+    failures we want to swallow.
     """
+    record_api_call()
     try:
         client = camera_worker.analyzer.client
         message = client.messages.create(
@@ -1472,6 +1605,7 @@ def generate_quiz(session_markdown: str,
             "generate the quiz entirely from today's transcript.)"
         )
 
+    record_api_call()
     client = camera_worker.analyzer.client
     message = client.messages.create(
         model=MODEL_ID,
@@ -1488,6 +1622,7 @@ def generate_quiz(session_markdown: str,
 def grade_short_answer(question: str, reference_answer: str,
                        user_answer: str) -> dict:
     """Grade a student's short answer against the reference via Claude."""
+    record_api_call()
     client = camera_worker.analyzer.client
     message = client.messages.create(
         model=MODEL_ID,
@@ -1643,6 +1778,7 @@ def generate_practice_exam(class_name: str) -> dict:
         + "\n\nGenerate the 20-question practice exam now."
     )
 
+    record_api_call()
     try:
         client = camera_worker.analyzer.client
         message = client.messages.create(
@@ -1764,6 +1900,7 @@ def generate_concept_explanation(class_name: str, concept: dict) -> dict:
         f"oldest first):\n{context}\n\n"
         f"Write the study-oriented in-depth explanation now."
     )
+    record_api_call()
     try:
         client = camera_worker.analyzer.client
         message = client.messages.create(
@@ -1942,6 +2079,7 @@ def generate_concept_relationships(class_name: str) -> dict:
         f"Identify the meaningful relationships now and return the JSON edge list."
     )
 
+    record_api_call()
     try:
         client = camera_worker.analyzer.client
         message = client.messages.create(
@@ -2326,6 +2464,17 @@ camera_worker = CameraWorker()
 audio_worker = AudioWorker()
 
 
+@app.context_processor
+def inject_deploy_flags():
+    """Make `hosted` available to every template without touching call sites.
+
+    Pass D1: templates use `{% if hosted %}…{% endif %}` to hide live-capture
+    entry points (the Start Session form) when the app is running on a server
+    with no camera/mic. Evaluated per-request so the env can be toggled.
+    """
+    return {"hosted": is_hosted_mode()}
+
+
 # ---- Per-class accent color (Pass 11) ----------------------------------------
 #
 # Each class can have a custom hex accent stored in sessions/<class>/meta.json
@@ -2502,13 +2651,26 @@ def landing():
 
 @app.route("/audio_devices")
 def audio_devices():
-    """JSON list of input devices for the landing-page picker (Pass 5)."""
+    """JSON list of input devices for the landing-page picker (Pass 5).
+
+    Hosted (Pass D1): the server has no mic — return an empty list rather
+    than querying sounddevice (which would fail or list the host's audio
+    stack). Callers degrade gracefully to "System default".
+    """
+    if is_hosted_mode():
+        return jsonify([])
     return jsonify(list_audio_devices())
 
 
 @app.route("/start", methods=["POST"])
 def start():
-    """Begin a session tagged to a class, then hand off to the main page."""
+    """Begin a session tagged to a class, then hand off to the main page.
+
+    Hosted (Pass D1): live-capture isn't available — refuse before touching
+    the camera/mic workers and tell the user to import a YouTube link.
+    """
+    if is_hosted_mode():
+        return _hosted_live_capture_response()
     choice = request.form.get("class_select", "")
     raw = request.form.get("new_class", "") if choice == "__new__" else choice
     name = sanitize_class_name(raw)
@@ -2558,7 +2720,13 @@ def session_page():
 
     If the session has already ended, the cached quiz is handed to the template
     so a page refresh lands straight on the interactive quiz.
+
+    Hosted (Pass D1): no session ever exists in hosted mode (the /start route
+    refuses to create one), so bounce to landing rather than render an empty
+    live view.
     """
+    if is_hosted_mode():
+        return _hosted_live_capture_response()
     if state.session is None:
         return redirect(url_for("landing"))
     return render_template(
@@ -2574,7 +2742,14 @@ def session_page():
 
 @app.route("/video_feed")
 def video_feed():
-    """MJPEG stream of the live camera preview."""
+    """MJPEG stream of the live camera preview.
+
+    Hosted (Pass D1): no camera — refuse rather than spinning the generator
+    forever waiting for a frame that will never come.
+    """
+    if is_hosted_mode():
+        return _hosted_live_capture_response()
+
     def generate():
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
         frame_interval = 1.0 / PREVIEW_FPS
@@ -2594,7 +2769,15 @@ def video_feed():
 
 @app.route("/events")
 def events():
-    """Server-Sent Events: meter, status, feedback, transcript, error."""
+    """Server-Sent Events: meter, status, feedback, transcript, error.
+
+    Hosted (Pass D1): the SSE bus only carries live-capture events; with no
+    capture, the stream would be silent forever. Refuse so clients don't
+    open a hanging connection.
+    """
+    if is_hosted_mode():
+        return _hosted_live_capture_response()
+
     def stream():
         q = bus.subscribe()
         # Prime the new client with the current resting status.
@@ -2623,6 +2806,10 @@ def events():
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
+    # Hosted (Pass D1): no camera, no analysis. JSON shape matches the live
+    # response so the existing frontend handler degrades gracefully.
+    if is_hosted_mode():
+        return _hosted_live_capture_response(json_response=True)
     accepted, message = camera_worker.trigger_analysis()
     return jsonify({"accepted": accepted, "message": message})
 
@@ -2630,6 +2817,8 @@ def analyze():
 @app.route("/toggle_pause", methods=["POST"])
 def toggle_pause():
     """Pause or resume the live session (camera, audio, and elapsed clock)."""
+    if is_hosted_mode():
+        return _hosted_live_capture_response(json_response=True)
     sess = state.session
     if sess is None or sess.ended:
         return jsonify({"ok": False, "error": "No active session."}), 400
@@ -2644,6 +2833,8 @@ def toggle_pause():
 def toggle_mode():
     """Flip capture mode mid-session. Header stays as starting mode; an inline
     italic marker records the switch in the transcript (and is surfaced live)."""
+    if is_hosted_mode():
+        return _hosted_live_capture_response(json_response=True)
     sess = state.session
     if sess is None or sess.ended:
         return jsonify({"ok": False, "error": "No active session."}), 400
@@ -2668,6 +2859,8 @@ def end_session():
     The quiz is cached on the session so a refresh or repeat request returns
     the same quiz without regenerating it (and without merging concepts twice).
     """
+    if is_hosted_mode():
+        return _hosted_live_capture_response(json_response=True)
     if state.session is None:
         return jsonify({"ok": False, "error": "No active session."}), 400
 
@@ -2716,6 +2909,11 @@ def end_session():
         sess.quiz = annotate_quiz(quiz, sess.started_at, class_dir)
         bus.broadcast({"type": "status", "text": "Session ended."})
         return jsonify({"ok": True, "quiz": sess.quiz})
+    except APIQuotaExceeded as exc:
+        # Pass D1: the daily cap fired mid end-of-session. Don't 500 — return
+        # a 429 with the friendly message so the live page can surface it.
+        bus.broadcast({"type": "error", "text": str(exc)})
+        return quota_exceeded_response(exc, json_response=True)
     except Exception as exc:
         bus.broadcast({"type": "error", "text": f"Quiz: {exc}"})
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -2737,6 +2935,8 @@ def grade_answer():
         return jsonify(
             grade_short_answer(question, reference_answer, user_answer)
         )
+    except APIQuotaExceeded as exc:
+        return quota_exceeded_response(exc, json_response=True)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -2927,6 +3127,9 @@ def class_session_quiz(class_name: str, session_id: str):
             annotate_quiz(quiz, start, md_path.parent)
             past_quiz_cache[cache_key] = quiz   # cache successes only
             cached = quiz
+        except APIQuotaExceeded as exc:
+            # Pass D1: friendly 429 — don't render the empty-quiz page.
+            return quota_exceeded_response(exc)
         except Exception as exc:
             # Don't cache — a reload should retry rather than serve a
             # permanent "couldn't generate" page until process restart.
@@ -2977,7 +3180,10 @@ def class_exam(class_name: str):
             )
         # Stale link (process restart, etc.) — regenerate below.
 
-    result = generate_practice_exam(name)
+    try:
+        result = generate_practice_exam(name)
+    except APIQuotaExceeded as exc:
+        return quota_exceeded_response(exc)
     if result.get("error") == "not_enough_concepts":
         return render_template(
             "exam_empty.html",
@@ -3078,6 +3284,8 @@ def _write_imported_session_markdown(file_path: Path, *, class_name: str,
 
 def _friendly_import_error(exc: Exception) -> str:
     """Map a low-level exception to a one-line message the user can act on."""
+    if isinstance(exc, APIQuotaExceeded):
+        return str(exc)
     msg = str(exc)
     low = msg.lower()
     if "private" in low or "members-only" in low or "sign in" in low:
@@ -3086,6 +3294,10 @@ def _friendly_import_error(exc: Exception) -> str:
         return "Video unavailable (deleted, region-locked, or removed)."
     if "live event" in low or "this live event" in low:
         return "Live streams can't be imported until they're finished."
+    if ("audio transcription isn't available" in low
+            or ("no captions" in low and "web version" in low)):
+        return ("This video has no captions, and audio transcription isn't "
+                "available in the web version. Try a captioned video instead.")
     if "could not produce a transcript" in low:
         return "Couldn't get a transcript (no captions and audio failed)."
     if "ffmpeg" in low:
@@ -3111,8 +3323,17 @@ def run_import_job(job_id: str, class_name: str, url: str) -> None:
         transcript = fetch_captions(url)
         used = "captions"
 
-        # 2. Audio fallback if no captions.
+        # 2. Audio fallback if no captions. Skipped in hosted mode — Whisper
+        # downloads + transcribes a full video and is far too heavy for a
+        # small web host. Captions-only is the hosted contract; surface a
+        # friendly message so the user picks a captioned video instead.
         if not transcript:
+            if is_hosted_mode():
+                raise RuntimeError(
+                    "This video has no captions, and audio transcription "
+                    "isn't available in the web version. Try a captioned "
+                    "video instead."
+                )
             _set_job(job_id, stage="no captions; downloading audio")
             transcript = transcribe_audio(
                 url,
@@ -3349,7 +3570,10 @@ def class_relationships_generate(class_name: str):
     if not name or not (SESSIONS_DIR / name).is_dir():
         return jsonify({"ok": False, "error": "Class not found."}), 404
 
-    result = generate_concept_relationships(name)
+    try:
+        result = generate_concept_relationships(name)
+    except APIQuotaExceeded as exc:
+        return quota_exceeded_response(exc, json_response=True)
     if result.get("error") and not result["edges"]:
         # Distinguish soft "not enough concepts" from a real API/parse fail.
         msg = result["error"]
@@ -3504,7 +3728,10 @@ def class_concept_detail(class_name: str, concept_name: str):
     cache_key = (name, normalize_concept(concept.get("name", "")))
     cached = concept_explain_cache.get(cache_key)
     if cached is None:
-        cached = generate_concept_explanation(name, concept)
+        try:
+            cached = generate_concept_explanation(name, concept)
+        except APIQuotaExceeded as exc:
+            return quota_exceeded_response(exc)
         # Only cache successful generations — a transient API failure
         # shouldn't poison the slot forever (a reload retries).
         if cached.get("explanation"):

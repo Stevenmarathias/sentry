@@ -1,5 +1,9 @@
 anthropic>=0.40.0
 flask>=3.0.0
+# Pass D1 — production WSGI server. The Flask dev server (`python sentry_web.py`)
+# stays usable locally; gunicorn is what a host invokes via the Procfile
+# (`web: gunicorn sentry_web:app`).
+gunicorn>=21.2.0
 opencv-python>=4.8.0
 pillow>=10.0.0
 openai-whisper>=20231117
