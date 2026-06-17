@@ -20,6 +20,11 @@ sentry.py; sentry.py is left untouched.
     ANTHROPIC_API_KEY=... .venv/bin/python sentry_web.py
     # then open http://127.0.0.1:5000
 """
+# Pass D1.1: lazy annotations so any future type hint referencing an optional
+# library (cv2.VideoCapture, sd.InputStream, …) stays as a string and is
+# never evaluated at runtime — mirror of the same change in sentry.py.
+from __future__ import annotations
+
 import hashlib
 import json
 import os
@@ -33,9 +38,25 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
-import cv2
+# Pass D1.1: hardware-dependent imports are wrapped so the app can boot on
+# a server without PortAudio / OpenCV system libs. Live-capture routes are
+# already gated off in hosted mode (Pass D1); these flags let the routes
+# also refuse cleanly if the libs are simply absent. CameraWorker /
+# AudioWorker construction in this module is Python-only — they don't touch
+# the libs until .start() runs, which the route guards prevent.
+try:
+    import cv2
+    _HAS_CV2 = True
+except (OSError, ImportError):
+    cv2 = None
+    _HAS_CV2 = False
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+    _HAS_SOUNDDEVICE = True
+except (OSError, ImportError):
+    sd = None
+    _HAS_SOUNDDEVICE = False
 from flask import (
     Flask,
     Response,
@@ -108,6 +129,14 @@ def is_hosted_mode() -> bool:
     """Single source of truth for SENTRY_HOSTED. Read at call time, never
     cached, so a test harness can flip the env between requests."""
     return _truthy_env("SENTRY_HOSTED")
+
+
+def _live_capture_blocked() -> bool:
+    """True iff a live-capture route must refuse: either we're in hosted
+    mode (no camera/mic by contract) OR the hardware libs failed to import
+    (Pass D1.1 — the app can boot without PortAudio/OpenCV; the routes that
+    need them then degrade to the same friendly response)."""
+    return is_hosted_mode() or (not _HAS_CV2) or (not _HAS_SOUNDDEVICE)
 
 
 # Local default is high enough to never bite the owner; hosted operators set
@@ -458,7 +487,12 @@ def list_audio_devices() -> list[dict]:
     Filters to devices with at least one input channel and flags whichever
     sounddevice considers the current input default. Returns [] on any
     enumeration failure so the picker just stays hidden.
+
+    Pass D1.1: if sounddevice failed to import (PortAudio missing on the
+    host), return [] without touching `sd` rather than crashing.
     """
+    if not _HAS_SOUNDDEVICE:
+        return []
     try:
         devices = sd.query_devices()
     except Exception:
@@ -1025,7 +1059,9 @@ class CameraWorker:
         self.analyzer = Analyzer()
         self.detector = ChangeDetector()
 
-        self._cap: Optional[cv2.VideoCapture] = None
+        # Pass D1.1: annotation dropped (was Optional[cv2.VideoCapture]) so
+        # this class body still executes when cv2 failed to import.
+        self._cap = None
         self._latest_frame: Optional[np.ndarray] = None
         self._frame_lock = threading.Lock()
 
@@ -1259,7 +1295,9 @@ class AudioWorker:
     def __init__(self):
         self.transcriber = Transcriber()  # lazy: model loads on first chunk
 
-        self._stream: Optional[sd.InputStream] = None
+        # Pass D1.1: annotation dropped (was Optional[sd.InputStream]) so
+        # this class body still executes when sounddevice failed to import.
+        self._stream = None
         self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
 
@@ -2657,7 +2695,7 @@ def audio_devices():
     than querying sounddevice (which would fail or list the host's audio
     stack). Callers degrade gracefully to "System default".
     """
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return jsonify([])
     return jsonify(list_audio_devices())
 
@@ -2669,7 +2707,7 @@ def start():
     Hosted (Pass D1): live-capture isn't available — refuse before touching
     the camera/mic workers and tell the user to import a YouTube link.
     """
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return _hosted_live_capture_response()
     choice = request.form.get("class_select", "")
     raw = request.form.get("new_class", "") if choice == "__new__" else choice
@@ -2725,7 +2763,7 @@ def session_page():
     refuses to create one), so bounce to landing rather than render an empty
     live view.
     """
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return _hosted_live_capture_response()
     if state.session is None:
         return redirect(url_for("landing"))
@@ -2747,7 +2785,7 @@ def video_feed():
     Hosted (Pass D1): no camera — refuse rather than spinning the generator
     forever waiting for a frame that will never come.
     """
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return _hosted_live_capture_response()
 
     def generate():
@@ -2775,7 +2813,7 @@ def events():
     capture, the stream would be silent forever. Refuse so clients don't
     open a hanging connection.
     """
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return _hosted_live_capture_response()
 
     def stream():
@@ -2808,7 +2846,7 @@ def events():
 def analyze():
     # Hosted (Pass D1): no camera, no analysis. JSON shape matches the live
     # response so the existing frontend handler degrades gracefully.
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return _hosted_live_capture_response(json_response=True)
     accepted, message = camera_worker.trigger_analysis()
     return jsonify({"accepted": accepted, "message": message})
@@ -2817,7 +2855,7 @@ def analyze():
 @app.route("/toggle_pause", methods=["POST"])
 def toggle_pause():
     """Pause or resume the live session (camera, audio, and elapsed clock)."""
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return _hosted_live_capture_response(json_response=True)
     sess = state.session
     if sess is None or sess.ended:
@@ -2833,7 +2871,7 @@ def toggle_pause():
 def toggle_mode():
     """Flip capture mode mid-session. Header stays as starting mode; an inline
     italic marker records the switch in the transcript (and is surfaced live)."""
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return _hosted_live_capture_response(json_response=True)
     sess = state.session
     if sess is None or sess.ended:
@@ -2859,7 +2897,7 @@ def end_session():
     The quiz is cached on the session so a refresh or repeat request returns
     the same quiz without regenerating it (and without merging concepts twice).
     """
-    if is_hosted_mode():
+    if _live_capture_blocked():
         return _hosted_live_capture_response(json_response=True)
     if state.session is None:
         return jsonify({"ok": False, "error": "No active session."}), 400

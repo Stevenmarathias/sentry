@@ -5,22 +5,68 @@ whiteboard changes, sends the settled frame to Claude (Opus 4.7) for analysis,
 and renders structured feedback in a floating Tkinter UI. Audio capture +
 Whisper transcription is optional and gets attached to the next analysis.
 """
+# Pass D1.1: lazy annotations so type hints referencing optional libraries
+# (tk.Text, sd.InputStream, cv2.VideoCapture, …) stay as strings and never
+# evaluate at class/def time. Lets sentry_web import this module on a
+# hardware-less host where those libs failed to load.
+from __future__ import annotations
+
 import base64
 import json
 import os
 import queue
 import threading
 import time
-import tkinter as tk
-from tkinter import ttk
 from typing import List, Optional
 
 import anthropic
-import cv2
 import numpy as np
-import sounddevice as sd
-import whisper
-from PIL import Image, ImageTk
+
+# Pass D1.1: hardware-dependent and UI-only imports are guarded so this
+# module can still be *imported* on a server with no PortAudio, no OpenCV
+# system libs, no Tk, no Whisper install. sentry_web.py only needs a handful
+# of constants and a few classes (Analyzer, ChangeDetector, Transcriber)
+# from here, and CameraWorker / AudioWorker in sentry_web.py are kept route-
+# gated so the missing libs are never *used* on a hardware-less host.
+# Running sentry.py itself (the Tk live-feedback UI) still requires all of
+# these; main() will error clearly if they're missing.
+try:
+    import cv2
+    _HAS_CV2 = True
+except (OSError, ImportError):
+    cv2 = None
+    _HAS_CV2 = False
+
+try:
+    import sounddevice as sd
+    _HAS_SOUNDDEVICE = True
+except (OSError, ImportError):
+    sd = None
+    _HAS_SOUNDDEVICE = False
+
+try:
+    import whisper
+    _HAS_WHISPER = True
+except (OSError, ImportError):
+    whisper = None
+    _HAS_WHISPER = False
+
+try:
+    import tkinter as tk
+    from tkinter import ttk
+    _HAS_TK = True
+except (OSError, ImportError):
+    tk = None
+    ttk = None
+    _HAS_TK = False
+
+try:
+    from PIL import Image, ImageTk
+    _HAS_IMAGETK = True
+except (OSError, ImportError):
+    Image = None
+    ImageTk = None
+    _HAS_IMAGETK = False
 
 
 # ---- Configuration -----------------------------------------------------------
@@ -190,7 +236,9 @@ class AudioRecorder:
     def __init__(self, sample_rate: int = AUDIO_SAMPLE_RATE):
         self.sample_rate = sample_rate
         self._chunks: List[np.ndarray] = []
-        self._stream: Optional[sd.InputStream] = None
+        # Pass D1.1: annotation dropped (was Optional[sd.InputStream]) so this
+        # class body still executes when sounddevice failed to import.
+        self._stream = None
         self._lock = threading.Lock()
         self.recording = False
 
