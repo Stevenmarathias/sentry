@@ -2502,6 +2502,19 @@ camera_worker = CameraWorker()
 audio_worker = AudioWorker()
 
 
+# Pass D2.4: surface a missing API key in the worker log on boot — the
+# existing `main()` warning only fires under the Flask dev server, but each
+# gunicorn worker hits this module-level statement on import, so Render's
+# Logs tab calls out the most common deploy misconfiguration before the
+# first request is served. Routed to stderr + flushed so gunicorn's log
+# pipe picks it up immediately rather than block-buffering it.
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    import sys as _sys
+    print("WARNING: ANTHROPIC_API_KEY is not set — Claude calls will fail "
+          "with an auth error. Set it in the Render dashboard → "
+          "Environment.", file=_sys.stderr, flush=True)
+
+
 @app.context_processor
 def inject_deploy_flags():
     """Make `hosted` available to every template without touching call sites.
@@ -3368,10 +3381,20 @@ def _write_pasted_session_markdown(file_path: Path, *, class_name: str,
 
 
 def _friendly_import_error(exc: Exception) -> str:
-    """Map a low-level exception to a one-line message the user can act on."""
+    """Map a low-level exception to a one-line message the user can act on.
+
+    Pass D2.4: always include the exception class name in the catch-all
+    fallback, and never return a blank "Import failed:" tail. A handful of
+    exception types stringify to "" — notably StopIteration from
+    `next(b.text for b in message.content if b.type == "text")` when the
+    Anthropic response has no text block, and some httpx connection errors.
+    Before this fix those produced the literal blank-tailed message the UI
+    showed; now the type name is always part of the surfaced string so a
+    user (and the Render Logs tab) can diagnose what actually threw.
+    """
     if isinstance(exc, APIQuotaExceeded):
         return str(exc)
-    msg = str(exc)
+    msg = (str(exc) or "").strip()
     low = msg.lower()
     if "private" in low or "members-only" in low or "sign in" in low:
         return "That video is private or requires sign-in."
@@ -3389,7 +3412,18 @@ def _friendly_import_error(exc: Exception) -> str:
         return "Audio extraction failed (ffmpeg). Try a captioned video."
     if "api" in low and "key" in low:
         return "Claude API call failed — check ANTHROPIC_API_KEY."
-    return f"Import failed: {msg[:200]}"
+    if "authentication" in low or "unauthorized" in low or "401" in low:
+        return ("Claude API rejected the key (401 / authentication). Check "
+                "ANTHROPIC_API_KEY in the Render dashboard.")
+    if "rate limit" in low or "rate_limit" in low or "429" in low:
+        return "Claude API rate-limited the request. Try again in a moment."
+    if "credit balance" in low or "billing" in low or "insufficient" in low:
+        return "Claude API billing problem (out of credits). Check the console."
+    cls = type(exc).__name__
+    if not msg:
+        return (f"Import failed: {cls} (no message — see server logs for "
+                f"the traceback).")
+    return f"Import failed ({cls}): {msg[:200]}"
 
 
 def run_import_job(job_id: str, class_name: str, url: str) -> None:
@@ -3484,13 +3518,18 @@ def run_import_job(job_id: str, class_name: str, url: str) -> None:
                 file_path.unlink()
         except Exception:
             pass
+        # Pass D2.4: print the full traceback so Render's Logs tab shows the
+        # actual stack frame that threw, not just a one-line "failed: foo".
+        import traceback
+        print(f"[yt-import {job_id}] FAILED ({type(exc).__name__}): "
+              f"{exc!r}", flush=True)
+        traceback.print_exc()
         _set_job(
             job_id,
             status="error",
             stage="error",
             error=_friendly_import_error(exc),
         )
-        print(f"Import job {job_id} failed: {exc}")
 
 
 # Pass D2.3: paste-transcript import. Sits on the same job registry as the
@@ -3517,9 +3556,16 @@ def run_text_import_job(job_id: str, class_name: str,
     a friendly one-line message via _friendly_import_error.
     """
     file_path: Optional[Path] = None
+    # Pass D2.4: per-stage stdout lines so Render's Logs tab shows exactly
+    # which stage the worker was in when something failed (or how long each
+    # stage took). All `print(..., flush=True)` so output isn't buffered
+    # under gunicorn's stdio pipes.
+    print(f"[text-import {job_id}] start  class={class_name!r}  "
+          f"title={title!r}  chars={len(transcript)}", flush=True)
     try:
         _set_job(job_id, status="running", stage="saving transcript",
                  title=title)
+        print(f"[text-import {job_id}] saving transcript", flush=True)
         class_dir = SESSIONS_DIR / class_name
         class_dir.mkdir(parents=True, exist_ok=True)
         started = datetime.now()
@@ -3533,6 +3579,8 @@ def run_text_import_job(job_id: str, class_name: str,
         # Concept extraction + carryover, mirroring run_import_job 4-6.
         markdown = file_path.read_text(encoding="utf-8")
         _set_job(job_id, stage="extracting concepts")
+        print(f"[text-import {job_id}] extracting concepts "
+              f"(markdown={len(markdown)} chars)", flush=True)
         extracted = extract_concepts(markdown)
         if extracted:
             store = load_concepts(class_dir)
@@ -3540,9 +3588,15 @@ def run_text_import_job(job_id: str, class_name: str,
         else:
             store = None
             recurring = []
+        print(f"[text-import {job_id}]   extracted={len(extracted)}  "
+              f"recurring={len(recurring)}", flush=True)
 
         _set_job(job_id, stage="generating quiz")
+        print(f"[text-import {job_id}] generating quiz", flush=True)
         quiz = generate_quiz(markdown, recurring)
+        n_q = len(quiz.get("questions", [])) if isinstance(quiz, dict) else 0
+        print(f"[text-import {job_id}]   quiz has {n_q} questions",
+              flush=True)
 
         if extracted:
             store = merge_concepts(store, extracted, file_path.name, class_name)
@@ -3563,6 +3617,8 @@ def run_text_import_job(job_id: str, class_name: str,
                     class_name, file_path.name),
             },
         )
+        print(f"[text-import {job_id}] done  ->  {file_path.name}",
+              flush=True)
     except Exception as exc:
         # Don't leave a half-written session if anything failed mid-pipeline.
         try:
@@ -3570,13 +3626,21 @@ def run_text_import_job(job_id: str, class_name: str,
                 file_path.unlink()
         except Exception:
             pass
+        friendly = _friendly_import_error(exc)
         _set_job(
             job_id,
             status="error",
             stage="error",
-            error=_friendly_import_error(exc),
+            error=friendly,
         )
-        print(f"Text-import job {job_id} failed: {exc}")
+        # Pass D2.4: full traceback to stderr so the actual stack frame
+        # shows up in Render's Logs tab — the one-line `exc!r` covers the
+        # type + message even when str(exc) is "" (e.g. StopIteration from
+        # an empty Anthropic response).
+        import traceback
+        print(f"[text-import {job_id}] FAILED ({type(exc).__name__}): "
+              f"{exc!r}  ->  surfaced as: {friendly!r}", flush=True)
+        traceback.print_exc()
 
 
 def url_for_internal_history_session(class_name: str, filename: str) -> str:
