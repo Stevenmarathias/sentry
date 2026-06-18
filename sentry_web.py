@@ -3874,6 +3874,52 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
+# ---- Temporary YouTube-fetch diagnostic (Pass D2.2b) ------------------------
+#
+# Render's free tier doesn't expose a shell, so the standalone yt_diagnostic.py
+# from Pass D2.2 can't be run on the deployed host directly. This route runs
+# the same checks server-side and returns the captured stdout as plain text,
+# so a browser visit reveals which of the three transcript-fetch call shapes
+# (youtube-transcript-api / yt-dlp subs / yt-dlp metadata) actually works
+# from Render's IP. Gated on `?key=checkit` — a sentinel, not a security
+# boundary; the whole endpoint is removed in the next pass.
+
+_YT_DIAG_KEY = "checkit"
+
+
+@app.route("/__yt_diag")
+def yt_diag():
+    """Run yt_diagnostic.main() with stdout captured. Plain-text response so
+    a browser renders the lines verbatim. Returns 404 (no body content) when
+    the key query param is missing or wrong, so the endpoint is invisible to
+    accidental crawls.
+
+    Throwaway. Comes out in the next pass.
+    """
+    if request.args.get("key") != _YT_DIAG_KEY:
+        return ("Not found.", 404)
+
+    import contextlib
+    import io
+    try:
+        import yt_diagnostic  # repo-root module from Pass D2.2
+    except Exception as exc:
+        return Response(
+            f"Could not import yt_diagnostic: {exc!r}\n",
+            status=500, mimetype="text/plain; charset=utf-8",
+        )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            yt_diagnostic.main()
+        except Exception as exc:
+            # Should be unreachable — main() already catches per-attempt —
+            # but guard so a script-level crash still surfaces visibly.
+            print(f"\nDIAGNOSTIC CRASHED: {exc!r}")
+    return Response(buf.getvalue(), mimetype="text/plain; charset=utf-8")
+
+
 # ---- Entry point -------------------------------------------------------------
 
 def main() -> None:
