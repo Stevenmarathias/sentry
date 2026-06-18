@@ -96,10 +96,13 @@
       </article>
       {% endfor %}
 
-      {# Pass D1: in hosted mode there's no camera/mic, so the create-and-start
-         flow has nowhere to go. Hide the "Create new class" card entirely —
-         hosted users create their first class via the YouTube import button
-         on the per-class overview (already reachable from the class grid). #}
+      {# Pass D2.1: a "Create class" card is rendered in BOTH modes — the local
+         one (below, {% if not hosted %}) creates-and-starts a live capture;
+         the hosted one (further below, {% if hosted %}) just creates the
+         class folder and lands on /class/<name>, where the YouTube import
+         lives. Both reuse the same ids (new-class-toggle, new-class-form,
+         new-class-input) so the existing landing.js toggle wiring works
+         unchanged in either mode. #}
       {% if not hosted %}
       <!-- "Create new class" still does create-and-start inline. There's
            nothing to navigate to before the class exists, so this card
@@ -126,8 +129,34 @@
           <button type="submit" class="primary">Start session</button>
         </form>
       </article>
+      {% else %}
+      <!-- Pass D2.1 hosted variant: no capture_mode / audio picker. The form
+           submits to /create_class which just mkdirs the class folder and
+           redirects to /class/<name>, where the YouTube import card is the
+           primary way to add content. -->
+      <article class="panel class-card new-class-card"
+               style="animation-delay: {{ classes|length * 60 }}ms;">
+        <button type="button" id="new-class-toggle" class="add-class-btn">
+          + Create class
+        </button>
+        <form id="new-class-form" method="POST"
+              action="{{ url_for('create_class') }}" hidden>
+          <input type="text" name="new_class" id="new-class-input"
+                 placeholder="New class name" autocomplete="off" required>
+          <button type="submit" class="primary">Create class</button>
+        </form>
+      </article>
       {% endif %}
     </div>
+
+    {# Pass D2.1: empty-state hint when a hosted visitor lands on a server
+       with zero classes — give them one clear sentence on what to do. #}
+    {% if hosted and totals.classes == 0 %}
+    <p class="empty new-class-hint">
+      No classes yet — create one above, then import a lecture from YouTube
+      on the class page.
+    </p>
+    {% endif %}
   </main>
 
   <script>

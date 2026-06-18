@@ -2700,6 +2700,28 @@ def audio_devices():
     return jsonify(list_audio_devices())
 
 
+@app.route("/create_class", methods=["POST"])
+def create_class():
+    """Create an empty class folder, then land on its overview page.
+
+    Pass D2.1: hosted-mode entry point for class creation. Locally, a class
+    is born as a side-effect of /start (which both creates the folder and
+    begins a live capture). In hosted mode there's no capture, so this
+    route decouples the two steps — name in, mkdir, redirect to /class/<name>
+    where the YouTube import is already available.
+
+    Harmless in both modes; the UI only surfaces it in hosted mode. Posting
+    a name that already exists is treated as "open it" rather than an error
+    (idempotent), so a double-submit doesn't surprise the user.
+    """
+    raw = request.form.get("new_class", "")
+    name = sanitize_class_name(raw)
+    if not name:
+        return redirect(url_for("landing"))
+    (SESSIONS_DIR / name).mkdir(parents=True, exist_ok=True)
+    return redirect(url_for("class_home", class_name=name))
+
+
 @app.route("/start", methods=["POST"])
 def start():
     """Begin a session tagged to a class, then hand off to the main page.
