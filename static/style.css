@@ -1590,6 +1590,53 @@ h2.class-card-name {
 /* `display: flex` above would shadow the browser's `[hidden]`. */
 .import-status[hidden] { display: none; }
 
+/* Pass D2.3: paste-transcript card. Reuses the .import-card shell so the
+   glass / border / spacing match the YouTube card; adds a stacked layout
+   (title input then textarea then button) and a `.themed` variant the
+   class overview applies in hosted mode to mark this as the primary input.
+   The textarea uses the same focus ring as .import-url. */
+.paste-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.paste-title, .paste-transcript {
+  width: 100%;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel-soft);
+  border: 1px solid var(--panel-border-2);
+  border-radius: var(--r-sm);
+  box-sizing: border-box;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.paste-transcript {
+  resize: vertical;
+  min-height: 140px;
+  line-height: 1.5;
+}
+.paste-title:focus, .paste-transcript:focus {
+  outline: none;
+  border-color: var(--class-accent, var(--accent-bright));
+  box-shadow: 0 0 0 3px var(--class-accent-softer, var(--accent-softer));
+}
+.paste-title::placeholder,
+.paste-transcript::placeholder { color: var(--muted-dim); }
+.paste-title:disabled,
+.paste-transcript:disabled { opacity: 0.6; cursor: progress; }
+.paste-btn { align-self: flex-start; padding-left: 18px; padding-right: 18px; }
+
+/* In hosted mode the paste card carries `.themed` to mark it as primary.
+   The class accent (Pass 11) is already exposed on the page-level body
+   via CSS custom properties — pull it in for a subtle accented border. */
+.import-card.themed {
+  border-color: var(--class-accent-border, var(--glass-border));
+  box-shadow: var(--glass-shadow),
+              0 0 0 1px var(--class-accent-softer, transparent) inset;
+}
+
 /* Pass 13: per-lecture quiz action lives inside the session-row link.
    The button is a glass pill that sits aligned right; clicking it
    cancels the row's anchor activation (history.js) and navigates to

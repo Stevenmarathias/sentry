@@ -68,10 +68,59 @@
     </section>
     {% endif %}
 
+    {# Pass D2.3: paste a transcript directly — universal content input
+       that works on any host because it never touches YouTube. In hosted
+       mode this card is the PRIMARY ingestion path (the YouTube card
+       below is hidden, since Render's datacenter IP is blocked by
+       YouTube). Locally it appears alongside YouTube import as a bonus.
+       Reuses the import-job registry: posting kicks off a background
+       job and the same /import_status polling JS handles the rest. #}
+    <section class="import-card{% if hosted %} themed{% endif %}">
+      <h2 class="import-card-title">
+        {% if hosted %}Add a lecture from a pasted transcript{% else %}Paste a transcript{% endif %}
+      </h2>
+      <p class="import-card-hint">
+        {% if hosted %}
+        Paste a lecture transcript (captions you saved, course notes,
+        AI-transcribed audio — any text). Sentry runs the same concept
+        extraction and quiz generation as a live capture.
+        {% else %}
+        Already have transcript text? Paste it here to skip the YouTube
+        fetch and go straight to the quiz.
+        {% endif %}
+      </p>
+      <form id="paste-form" class="paste-form" autocomplete="off">
+        <input type="text"
+               id="paste-title"
+               name="title"
+               class="paste-title"
+               placeholder="Lecture title (e.g. Lecture 3 — neural nets)"
+               required>
+        <textarea id="paste-transcript"
+                  name="transcript"
+                  class="paste-transcript"
+                  rows="8"
+                  placeholder="Paste the transcript text here…"
+                  required></textarea>
+        <button type="submit" class="primary paste-btn">Create from transcript</button>
+      </form>
+      <!-- Reuses the same status-surface styles as the YouTube card. -->
+      <div id="paste-status" class="import-status" hidden>
+        <span class="import-status-spinner" aria-hidden="true">⏳</span>
+        <span class="import-status-stage" id="paste-status-stage">
+          Starting…
+        </span>
+      </div>
+    </section>
+
+    {% if not hosted %}
     <!-- Pass 14: import a lecture from YouTube. Tries captions first
          (instant); falls back to downloading audio and transcribing
          with Whisper (minutes). The button kicks off a background job
-         and a status block below tracks live stage updates. -->
+         and a status block below tracks live stage updates.
+         Pass D2.3: hidden in hosted mode — YouTube blocks datacenter
+         IPs, so this path doesn't work on the web build. Hosted users
+         use the paste-transcript card above instead. -->
     <section class="import-card">
       <h2 class="import-card-title">Import from YouTube</h2>
       <p class="import-card-hint">
@@ -98,6 +147,7 @@
         </span>
       </div>
     </section>
+    {% endif %}
 
     <p class="section-label">Browse</p>
 

@@ -203,3 +203,109 @@ if (importForm) {
     }
   });
 }
+
+
+// ---- Pass D2.3: paste-transcript import -----------------------------------
+//
+// Hosted equivalent of the YouTube import — POSTs {title, transcript} to
+// /class/<n>/import_text and reuses the same pollImportJob + redirect-to-
+// quiz flow. The form has its own status surface (#paste-status) so a
+// concurrent YouTube import (local mode only) keeps its own. Either form
+// being in flight locks the other to avoid two simultaneous jobs.
+
+const pasteForm = document.getElementById("paste-form");
+const pasteTitle = document.getElementById("paste-title");
+const pasteTranscript = document.getElementById("paste-transcript");
+const pasteBtn = document.querySelector(".paste-btn");
+const pasteStatus = document.getElementById("paste-status");
+const pasteStatusStage = document.getElementById("paste-status-stage");
+
+function showPasteStatus(text, isError) {
+  if (!pasteStatus) return;
+  pasteStatus.hidden = false;
+  pasteStatus.classList.toggle("error", Boolean(isError));
+  if (pasteStatusStage) pasteStatusStage.textContent = text;
+}
+
+function lockPasteForm(locked) {
+  if (pasteBtn) {
+    pasteBtn.disabled = locked;
+    pasteBtn.textContent = locked ? "Working…" : "Create from transcript";
+  }
+  if (pasteTitle) pasteTitle.disabled = locked;
+  if (pasteTranscript) pasteTranscript.disabled = locked;
+  // Also lock the YouTube form if it's on the page — only one job at a time.
+  if (importBtn) importBtn.disabled = locked;
+  if (importUrlInput) importUrlInput.disabled = locked;
+}
+
+// Re-purpose pollImportJob's status surface for the paste flow by swapping
+// the function it writes into. Simpler than parameterising pollImportJob.
+async function pollPasteJob(jobId) {
+  while (true) {
+    let data;
+    try {
+      const res = await fetch(`/import_status/${encodeURIComponent(jobId)}`);
+      data = await res.json();
+    } catch (err) {
+      showPasteStatus("Lost connection — retrying…", true);
+      await new Promise((r) => setTimeout(r, IMPORT_POLL_MS));
+      continue;
+    }
+    if (!data.ok) {
+      showPasteStatus(data.error || "Unknown job.", true);
+      lockPasteForm(false);
+      return;
+    }
+    if (data.status === "error") {
+      showPasteStatus(data.error || "Import failed.", true);
+      lockPasteForm(false);
+      return;
+    }
+    if (data.status === "done") {
+      showPasteStatus("Done — opening quiz…", false);
+      if (data.result && data.result.quiz_url) {
+        setTimeout(() => { window.location = data.result.quiz_url; }, 300);
+      } else {
+        lockPasteForm(false);
+      }
+      return;
+    }
+    showPasteStatus(data.stage || "Working…", false);
+    await new Promise((r) => setTimeout(r, IMPORT_POLL_MS));
+  }
+}
+
+if (pasteForm) {
+  pasteForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = (pasteTitle.value || "").trim();
+    const transcript = (pasteTranscript.value || "").trim();
+    if (!transcript) {
+      showPasteStatus("Paste a transcript first.", true);
+      return;
+    }
+    lockPasteForm(true);
+    showPasteStatus("Starting…", false);
+    try {
+      const res = await fetch(
+        `/class/${encodeURIComponent(className)}/import_text`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, transcript }),
+        },
+      );
+      const data = await res.json();
+      if (!data.ok) {
+        showPasteStatus(data.error || "Could not start import.", true);
+        lockPasteForm(false);
+        return;
+      }
+      pollPasteJob(data.job_id);
+    } catch (err) {
+      showPasteStatus("Could not reach server.", true);
+      lockPasteForm(false);
+    }
+  });
+}

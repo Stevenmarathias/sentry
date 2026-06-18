@@ -3342,6 +3342,31 @@ def _write_imported_session_markdown(file_path: Path, *, class_name: str,
     file_path.write_text(body, encoding="utf-8")
 
 
+def _write_pasted_session_markdown(file_path: Path, *, class_name: str,
+                                   started: datetime, title: str,
+                                   transcript: str) -> None:
+    """Pass D2.3 — write a session file from a user-pasted transcript.
+
+    Same shape as _write_imported_session_markdown, swapping the YouTube-
+    specific header lines for a paste-specific source label and a
+    user-supplied title. AUDIO_INPUT_RE still finds a value on its line, so
+    history_session / class_session_quiz render the page header without
+    special-casing this source.
+    """
+    ts = started.strftime("%H:%M:%S")
+    body = (
+        f"# Sentry Session — {class_name}\n\n"
+        f"**Started:** {started:%Y-%m-%d %H:%M}\n\n"
+        f"**Source:** Pasted transcript\n\n"
+        f"**Title:** {title}\n\n"
+        f"**Transcript source:** pasted\n\n"
+        f"**Audio input:** Pasted transcript\n\n"
+        f"---\n\n"
+        f"**🎙️ {ts}** — {transcript}\n\n"
+    )
+    file_path.write_text(body, encoding="utf-8")
+
+
 def _friendly_import_error(exc: Exception) -> str:
     """Map a low-level exception to a one-line message the user can act on."""
     if isinstance(exc, APIQuotaExceeded):
@@ -3468,6 +3493,92 @@ def run_import_job(job_id: str, class_name: str, url: str) -> None:
         print(f"Import job {job_id} failed: {exc}")
 
 
+# Pass D2.3: paste-transcript import. Sits on the same job registry as the
+# YouTube import (so /import_status, the existing polling JS, and the "done"
+# redirect all work unchanged) but skips the YouTube-specific resolve /
+# fetch-captions / Whisper steps — the user has already supplied the text.
+
+# Lenient text-size guardrails. Below TEXT_IMPORT_MIN_CHARS the paste is
+# almost certainly a typo / placeholder, not a real transcript; above
+# TEXT_IMPORT_MAX_CHARS the input would cost more to summarise than the
+# downstream value, and Sonnet would struggle to stay grounded across it.
+TEXT_IMPORT_MIN_CHARS = 100
+TEXT_IMPORT_MAX_CHARS = 200_000
+
+
+def run_text_import_job(job_id: str, class_name: str,
+                        title: str, transcript: str) -> None:
+    """Background worker for a pasted-transcript import.
+
+    Same downstream pipeline as run_import_job — write session markdown,
+    extract concepts, generate a quiz with FROM PRIOR LECTURE carryover,
+    persist concepts + quiz markdown — but no video resolve / caption fetch
+    / audio fallback. Errors clean up any partial session file and surface
+    a friendly one-line message via _friendly_import_error.
+    """
+    file_path: Optional[Path] = None
+    try:
+        _set_job(job_id, status="running", stage="saving transcript",
+                 title=title)
+        class_dir = SESSIONS_DIR / class_name
+        class_dir.mkdir(parents=True, exist_ok=True)
+        started = datetime.now()
+        stamp = started.strftime("%Y-%m-%d_%H%M")
+        file_path = _unique_session_path(class_dir, stamp)
+        _write_pasted_session_markdown(
+            file_path, class_name=class_name, started=started,
+            title=title, transcript=transcript,
+        )
+
+        # Concept extraction + carryover, mirroring run_import_job 4-6.
+        markdown = file_path.read_text(encoding="utf-8")
+        _set_job(job_id, stage="extracting concepts")
+        extracted = extract_concepts(markdown)
+        if extracted:
+            store = load_concepts(class_dir)
+            recurring = pick_recurring_concepts(store, extracted)
+        else:
+            store = None
+            recurring = []
+
+        _set_job(job_id, stage="generating quiz")
+        quiz = generate_quiz(markdown, recurring)
+
+        if extracted:
+            store = merge_concepts(store, extracted, file_path.name, class_name)
+            save_concepts(class_dir, store)
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(f"\n---\n\n## Practice Quiz\n\n"
+                    f"{render_quiz_markdown(quiz)}\n")
+
+        _set_job(
+            job_id,
+            status="done",
+            stage="done",
+            result={
+                "class_name": class_name,
+                "session_id": file_path.stem,
+                "session_filename": file_path.name,
+                "quiz_url": url_for_internal_history_session(
+                    class_name, file_path.name),
+            },
+        )
+    except Exception as exc:
+        # Don't leave a half-written session if anything failed mid-pipeline.
+        try:
+            if file_path is not None and file_path.exists():
+                file_path.unlink()
+        except Exception:
+            pass
+        _set_job(
+            job_id,
+            status="error",
+            stage="error",
+            error=_friendly_import_error(exc),
+        )
+        print(f"Text-import job {job_id} failed: {exc}")
+
+
 def url_for_internal_history_session(class_name: str, filename: str) -> str:
     """Build the /history/session/<class>/<file> URL outside a request ctx.
 
@@ -3502,6 +3613,58 @@ def class_import(class_name: str):
         target=run_import_job,
         args=(job_id, name, url),
         name=f"sentry-import-{job_id}",
+        daemon=True,
+    )
+    t.start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/class/<class_name>/import_text", methods=["POST"])
+def class_import_text(class_name: str):
+    """Pass D2.3: paste-transcript import.
+
+    Hosted equivalent of the YouTube import (which is blocked by YouTube on
+    datacenter IPs). Accepts JSON `{title, transcript}`, validates lightly,
+    kicks off run_text_import_job, returns `{ok: true, job_id}` so the
+    existing /import_status polling + redirect-to-quiz flow works unchanged.
+    The API cap is enforced naturally inside extract_concepts / generate_quiz.
+    """
+    name = sanitize_class_name(class_name)
+    if not name:
+        return jsonify({"ok": False, "error": "Invalid class name."}), 400
+    (SESSIONS_DIR / name).mkdir(parents=True, exist_ok=True)
+
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    transcript = (data.get("transcript") or "").strip()
+
+    # Default a missing title to a timestamp so the session still has a
+    # recognisable label in History instead of an empty header row.
+    if not title:
+        title = f"Pasted transcript — {datetime.now():%Y-%m-%d %H:%M}"
+
+    if len(transcript) < TEXT_IMPORT_MIN_CHARS:
+        return jsonify({
+            "ok": False,
+            "error": (f"Transcript is too short (need at least "
+                      f"{TEXT_IMPORT_MIN_CHARS} characters)."),
+        }), 400
+    if len(transcript) > TEXT_IMPORT_MAX_CHARS:
+        return jsonify({
+            "ok": False,
+            "error": (f"Transcript is too long (over "
+                      f"{TEXT_IMPORT_MAX_CHARS:,} characters). Trim it "
+                      f"or split into multiple lectures."),
+        }), 400
+
+    # Reuse _new_import_job's registry by passing the title in the `url`
+    # slot — the polling client doesn't care about that field, and the
+    # status payload separately surfaces `title` via _set_job below.
+    job_id = _new_import_job(name, url=f"pasted:{title}")
+    t = threading.Thread(
+        target=run_text_import_job,
+        args=(job_id, name, title, transcript),
+        name=f"sentry-import-text-{job_id}",
         daemon=True,
     )
     t.start()
@@ -3872,52 +4035,6 @@ def delete_class():
 
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
-
-
-# ---- Temporary YouTube-fetch diagnostic (Pass D2.2b) ------------------------
-#
-# Render's free tier doesn't expose a shell, so the standalone yt_diagnostic.py
-# from Pass D2.2 can't be run on the deployed host directly. This route runs
-# the same checks server-side and returns the captured stdout as plain text,
-# so a browser visit reveals which of the three transcript-fetch call shapes
-# (youtube-transcript-api / yt-dlp subs / yt-dlp metadata) actually works
-# from Render's IP. Gated on `?key=checkit` — a sentinel, not a security
-# boundary; the whole endpoint is removed in the next pass.
-
-_YT_DIAG_KEY = "checkit"
-
-
-@app.route("/__yt_diag")
-def yt_diag():
-    """Run yt_diagnostic.main() with stdout captured. Plain-text response so
-    a browser renders the lines verbatim. Returns 404 (no body content) when
-    the key query param is missing or wrong, so the endpoint is invisible to
-    accidental crawls.
-
-    Throwaway. Comes out in the next pass.
-    """
-    if request.args.get("key") != _YT_DIAG_KEY:
-        return ("Not found.", 404)
-
-    import contextlib
-    import io
-    try:
-        import yt_diagnostic  # repo-root module from Pass D2.2
-    except Exception as exc:
-        return Response(
-            f"Could not import yt_diagnostic: {exc!r}\n",
-            status=500, mimetype="text/plain; charset=utf-8",
-        )
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        try:
-            yt_diagnostic.main()
-        except Exception as exc:
-            # Should be unreachable — main() already catches per-attempt —
-            # but guard so a script-level crash still surfaces visibly.
-            print(f"\nDIAGNOSTIC CRASHED: {exc!r}")
-    return Response(buf.getvalue(), mimetype="text/plain; charset=utf-8")
 
 
 # ---- Entry point -------------------------------------------------------------
